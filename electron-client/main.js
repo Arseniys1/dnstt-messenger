@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, Notification } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const MessengerClient = require('./net/client');
@@ -62,6 +62,12 @@ ipcMain.handle('connect', async (_, cfg) => {
 
   client.on('message', (sender, text, time) => {
     win.webContents.send('message', { sender, text, time });
+    if (win.isMinimized() || !win.isVisible()) {
+      new Notification({
+        title: sender,
+        body: text.length > 100 ? text.slice(0, 100) + '…' : text
+      }).show();
+    }
   });
   client.on('online-list', (users) => {
     win.webContents.send('online-list', users);
