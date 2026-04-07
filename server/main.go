@@ -243,7 +243,19 @@ func saveMessage(sender, content string) {
 }
 
 func loadConfig(path string) {
-	f, _ := os.Open(path)
+	// Defaults
+	cfg = Config{
+		ListenAddr:    "0.0.0.0:9999",
+		DBPath:        "./messenger.db",
+		SharedKey:     "12345678901234567890123456789012",
+		MinPacketSize: 2,
+		HistoryLimit:  50,
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		fmt.Println("⚠️ Конфиг не найден, использую настройки по умолчанию.")
+		return
+	}
 	defer f.Close()
 	json.NewDecoder(f).Decode(&cfg)
 }

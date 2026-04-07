@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"golang.org/x/crypto/chacha20poly1305"
+	"golang.org/x/net/proxy"
 )
 
 type Config struct {
@@ -38,17 +39,27 @@ const (
 func main() {
 	loadConfig("client_config.json")
 
-	targetAddr := cfg.ProxyAddr
-	modeName := "DNSTT Proxy"
-	if cfg.DirectMode {
-		targetAddr = cfg.ServerAddr
-		modeName = "Direct Connect"
+	// Validate key length for chacha20poly1305 (must be 32 bytes)
+	if len(cfg.SharedKey) != 32 {
+		fmt.Printf("❌ shared_key должен быть ровно 32 символа (сейчас %d)\n", len(cfg.SharedKey))
+		return
 	}
 
-	fmt.Printf("🌐 Режим: %s | Подключение к: %s...\n", modeName, targetAddr)
-
 	var err error
-	conn, err = net.DialTimeout("tcp", targetAddr, 5*time.Second)
+	if cfg.DirectMode {
+		fmt.Printf("🌐 Режим: Direct Connect | Подключение к: %s...\n", cfg.ServerAddr)
+		conn, err = net.DialTimeout("tcp", cfg.ServerAddr, 10*time.Second)
+	} else {
+		fmt.Printf("🌐 Режим: DNSTT Proxy (SOCKS5) | Прокси: %s -> Сервер: %s...\n", cfg.ProxyAddr, cfg.ServerAddr)
+		baseDialer := &net.Dialer{Timeout: 10 * time.Second}
+		socks5Dialer, dialErr := proxy.SOCKS5("tcp", cfg.ProxyAddr, nil, baseDialer)
+		if dialErr != nil {
+			fmt.Printf("❌ Ошибка создания SOCKS5 диалера: %v\n", dialErr)
+			return
+		}
+		conn, err = socks5Dialer.Dial("tcp", cfg.ServerAddr)
+	}
+
 	if err != nil {
 		fmt.Printf("❌ Ошибка подключения: %v\n", err)
 		return
@@ -103,8 +114,7 @@ func main() {
 	historyDone := make(chan struct{})
 	go readLoop(historyDone)
 	<-historyDone
-	fmt.Println("--- Конец истории ---")
-	fmt.Println()
+	fmt.Println("--- Конец истории ---\n")
 
 	fmt.Println("✅ Авторизация успешна! (/exit для выхода)")
 
@@ -138,7 +148,10 @@ func register(login, pass string) bool {
 	conn.Write(packet)
 
 	res := make([]byte, 1)
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	conn.Read(res)
+	conn.SetReadDeadline(time.Time{})
+
 	if res[0] == 0x01 {
 		return true
 	}
@@ -154,7 +167,10 @@ func loginUser(login, pass string) {
 	conn.Write(packet)
 
 	res := make([]byte, 2)
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	n, _ := conn.Read(res)
+	conn.SetReadDeadline(time.Time{})
+
 	if n == 2 && (res[0] != 0 || res[1] != 0) {
 		sessionID = uint16(res[0])<<8 | uint16(res[1])
 	}
@@ -184,9 +200,6 @@ func sendMessage(text string) {
 	}
 }
 
-// readLoop читает входящие пакеты.
-// Пока история не получена (historyDone не закрыт) — выводит историю.
-// После — выводит сообщения чата в реальном времени.
 func readLoop(historyDone chan struct{}) {
 	buf := make([]byte, 2048)
 	historyFinished := false
@@ -207,7 +220,6 @@ func readLoop(historyDone chan struct{}) {
 			// ACK — игнорируем
 
 		case CmdHistory:
-			// [CmdHistory(1)][SenderLen(1)][Sender][TimeLen(1)][Time][MsgLen(2)][PlainText]
 			if n < 5 {
 				continue
 			}
@@ -239,7 +251,6 @@ func readLoop(historyDone chan struct{}) {
 			}
 
 		case CmdIncoming:
-			// [CmdIncoming(1)][SenderLen(1)][Sender][Nonce(12)][Ciphertext]
 			if n < 16 {
 				continue
 			}
