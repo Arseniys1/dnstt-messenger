@@ -94,7 +94,7 @@ async function doLogin() {
 
 // --- IPC listeners ---
 function registerListeners() {
-  ['message','online-list','history','history-end','disconnected'].forEach(ch =>
+  ['message','online-list','history','history-end','disconnected','ack','delivered'].forEach(ch =>
     window.api.removeAllListeners(ch)
   );
 
@@ -107,10 +107,24 @@ function registerListeners() {
     scrollBottom();
   });
 
-  window.api.onMessage(({ sender, text, time }) => {
-    if (sender === myUsername) return; // уже показали при отправке
-    appendMessage(sender, text, time, false);
+  window.api.onMessage(({ sender, text, time, msgId }) => {
+    if (sender === myUsername) return;
+    appendMessage(sender, text, time, false, msgId);
     scrollBottom();
+  });
+
+  window.api.onAck((msgId) => {
+    // Привязываем серверный msgId к последнему сообщению без него
+    const el = messages.querySelector('.msg.own:not([data-msg-id])');
+    if (el) el.dataset.msgId = msgId;
+  });
+
+  window.api.onDelivered((msgId) => {
+    const el = messages.querySelector(`.msg.own[data-msg-id="${msgId}"]`);
+    if (el) {
+      const ticks = el.querySelector('.ticks');
+      if (ticks) { ticks.textContent = '✓✓'; ticks.classList.add('read'); }
+    }
   });
 
   window.api.onOnlineList(users => {
@@ -144,10 +158,14 @@ function showConnect() {
   screenConnect.classList.add('active');
 }
 
-function appendMessage(sender, text, time, own) {
+function appendMessage(sender, text, time, own, msgId = null, localId = null) {
   const div = document.createElement('div');
   div.className = 'msg ' + (own ? 'own' : 'other');
-  div.innerHTML = `<div class="meta">${escHtml(own ? 'Вы' : sender)} · ${escHtml(time)}</div>${escHtml(text)}`;
+  if (msgId)   div.dataset.msgId   = msgId;
+  if (localId) div.dataset.localId = localId;
+
+  const ticks = own ? '<span class="ticks">✓</span>' : '';
+  div.innerHTML = `<div class="meta">${escHtml(own ? 'Вы' : sender)} · ${escHtml(time)}${ticks}</div>${escHtml(text)}`;
   messages.appendChild(div);
 }
 
@@ -187,10 +205,13 @@ msgInput.addEventListener('keydown', e => {
 function sendMsg() {
   const text = msgInput.value.trim();
   if (!text || !connected) return;
-  window.api.sendMessage(text);
+  const localId = window.api.sendMessage(text); // возвращает Promise
   const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  appendMessage(myUsername, text, now, true);
-  scrollBottom();
+  // localId — Promise, ждём его
+  Promise.resolve(localId).then(id => {
+    appendMessage(myUsername, text, now, true, null, id);
+    scrollBottom();
+  });
   msgInput.value = '';
   msgInput.style.height = 'auto';
 }

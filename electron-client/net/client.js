@@ -30,6 +30,8 @@ const CMD = {
   LOGIN_OK:    0x08,
   LOGIN_FAIL:  0x09,
   ONLINE_LIST: 0x0A,
+  READ:        0x0B,
+  DELIVERED:   0x0C,
 };
 
 class MessengerClient extends EventEmitter {
@@ -43,6 +45,8 @@ class MessengerClient extends EventEmitter {
     this._registerResolve = null;
     this._loginHandled = false;
     this._buf = Buffer.alloc(0);
+    this._localIdCounter = 0;
+    this._pendingAck = []; // [{localId, resolve}] — очередь ожидающих ACK
   }
 
   // Парсим "host:port" строку
@@ -191,12 +195,11 @@ class MessengerClient extends EventEmitter {
 
   // --- Отправка сообщения (ChaCha20-Poly1305 via @noble/ciphers) ---
   sendMessage(text) {
-    if (!this.sharedKey || !this.sessionID) return false;
+    if (!this.sharedKey || !this.sessionID) return null;
     const nonce = crypto.randomBytes(12);
     const key   = new Uint8Array(this.sharedKey);
     const msg   = new TextEncoder().encode(text);
 
-    // chacha20poly1305 из @noble возвращает [ciphertext + 16-byte tag]
     const cipher = chacha20poly1305(key, nonce);
     const ct = cipher.encrypt(msg);
 
@@ -208,7 +211,10 @@ class MessengerClient extends EventEmitter {
     nonce.copy(pkt, 3);
     Buffer.from(ct).copy(pkt, 15);
     this.socket.write(pkt);
-    return true;
+
+    // Возвращаем временный localID — заменится на серверный msgID через ACK
+    const localId = ++this._localIdCounter;
+    return localId;
   }
 
   // --- Расшифровка входящего (ChaCha20-Poly1305 via @noble/ciphers) ---
@@ -266,7 +272,11 @@ class MessengerClient extends EventEmitter {
       }
 
       if (cmd === CMD.ACK) {
-        this._buf = this._buf.slice(1);
+        // ACK теперь содержит msgID(4)
+        if (this._buf.length < 5) return;
+        const msgId = (this._buf[1] * 16777216) + (this._buf[2] << 16) + (this._buf[3] << 8) + this._buf[4];
+        this._buf = this._buf.slice(5);
+        this.emit('ack', msgId);
         continue;
       }
 
@@ -294,23 +304,33 @@ class MessengerClient extends EventEmitter {
       }
 
       if (cmd === CMD.INCOMING) {
-        // Формат: [0x04][senderLen(1)][sender][nonce(12)][ctLen(2)][ciphertext]
-        // Сервер не шлёт ctLen — читаем весь остаток как ciphertext одного пакета.
-        // Это безопасно т.к. сервер делает один Write на одно сообщение.
+        // [0x04][senderLen(1)][sender][msgID(4)][nonce(12)][ciphertext]
         if (this._buf.length < 4) return;
         const senderLen = this._buf[1];
-        const minLen = 2 + senderLen + 12 + 17;
+        const minLen = 2 + senderLen + 4 + 12 + 17;
         if (this._buf.length < minLen) return;
         const sender = this._buf.slice(2, 2 + senderLen).toString();
-        const nonce  = this._buf.slice(2 + senderLen, 2 + senderLen + 12);
-        const ct     = this._buf.slice(2 + senderLen + 12);
+        const off = 2 + senderLen;
+        const msgId = (this._buf[off] * 16777216) + (this._buf[off+1] << 16) + (this._buf[off+2] << 8) + this._buf[off+3];
+        const nonce  = this._buf.slice(off + 4, off + 4 + 12);
+        const ct     = this._buf.slice(off + 4 + 12);
         try {
           const plain = this._decrypt(ct, nonce);
           const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-          this.emit('message', sender, plain.toString(), now);
+          this.emit('message', sender, plain.toString(), now, msgId);
+          // Отправляем CmdRead серверу
+          this._sendRead(msgId);
         } catch (_) {}
         this._buf = Buffer.alloc(0);
         return;
+      }
+
+      if (cmd === CMD.DELIVERED) {
+        if (this._buf.length < 5) return;
+        const msgId = (this._buf[1] * 16777216) + (this._buf[2] << 16) + (this._buf[3] << 8) + this._buf[4];
+        this._buf = this._buf.slice(5);
+        this.emit('delivered', msgId);
+        continue;
       }
 
       if (cmd === CMD.ONLINE_LIST) {
@@ -335,6 +355,17 @@ class MessengerClient extends EventEmitter {
       // Неизвестный байт — пропускаем
       this._buf = this._buf.slice(1);
     }
+  }
+
+  _sendRead(msgId) {
+    if (!this.socket) return;
+    const pkt = Buffer.alloc(5);
+    pkt[0] = CMD.READ;
+    pkt[1] = (msgId >>> 24) & 0xff;
+    pkt[2] = (msgId >>> 16) & 0xff;
+    pkt[3] = (msgId >>> 8)  & 0xff;
+    pkt[4] =  msgId         & 0xff;
+    this.socket.write(pkt);
   }
 
   destroy() {

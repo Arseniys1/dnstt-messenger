@@ -31,6 +31,8 @@ const (
 	CmdLoginOK    = 0x08
 	CmdLoginFail  = 0x09
 	CmdOnlineList = 0x0A
+	CmdRead       = 0x0B // клиент -> сервер: прочитал сообщение msgID
+	CmdDelivered  = 0x0C // сервер -> клиент: сообщение msgID прочитано
 )
 
 var (
@@ -39,6 +41,7 @@ var (
 	sessions   = make(map[uint16]string)
 	conns      = make(map[uint16]net.Conn)
 	keys       = make(map[uint16][]byte) // SID -> sharedKey
+	msgSenders = make(map[int64]uint16)  // msgID -> senderSID
 	sessMu     sync.RWMutex
 	sidCounter uint16
 )
@@ -143,6 +146,8 @@ func handleConnection(conn net.Conn) {
 			mySID = handleLogin(conn, payload, sharedKey)
 		case CmdMsg:
 			handleMessage(conn, mySID, payload, sharedKey)
+		case CmdRead:
+			handleRead(mySID, payload)
 		}
 	}
 }
@@ -225,14 +230,46 @@ func handleMessage(conn net.Conn, senderSID uint16, data []byte, sharedKey []byt
 		return
 	}
 
-	saveMessage(user, string(decrypted))
+	msgID := saveMessage(user, string(decrypted))
 	fmt.Printf("📩 [%s]: %s\n", user, string(decrypted))
-	conn.Write([]byte{0x06})
 
-	broadcastEncrypted(senderSID, user, decrypted)
+	// ACK с msgID: [0x06][msgID(4)]
+	conn.Write([]byte{0x06,
+		byte(msgID >> 24), byte(msgID >> 16), byte(msgID >> 8), byte(msgID),
+	})
+
+	sessMu.Lock()
+	msgSenders[msgID] = senderSID
+	sessMu.Unlock()
+
+	broadcastEncrypted(senderSID, user, decrypted, msgID)
 }
 
-func broadcastEncrypted(senderSID uint16, senderName string, plaintext []byte) {
+// handleRead: клиент прочитал сообщение msgID → уведомляем отправителя
+// Формат: [msgID(4)]
+func handleRead(readerSID uint16, data []byte) {
+	if len(data) < 4 {
+		return
+	}
+	msgID := int64(data[0])<<24 | int64(data[1])<<16 | int64(data[2])<<8 | int64(data[3])
+
+	sessMu.RLock()
+	senderSID, ok := msgSenders[msgID]
+	senderConn := conns[senderSID]
+	sessMu.RUnlock()
+
+	if !ok || senderConn == nil || senderSID == readerSID {
+		return
+	}
+
+	// CmdDelivered: [0x0C][msgID(4)]
+	pkt := []byte{CmdDelivered,
+		byte(msgID >> 24), byte(msgID >> 16), byte(msgID >> 8), byte(msgID),
+	}
+	senderConn.Write(pkt)
+}
+
+func broadcastEncrypted(senderSID uint16, senderName string, plaintext []byte, msgID int64) {
 	senderBytes := []byte(senderName)
 
 	sessMu.RLock()
@@ -253,8 +290,12 @@ func broadcastEncrypted(senderSID uint16, senderName string, plaintext []byte) {
 		}
 		ct := aead.Seal(nil, nonce, plaintext, nil)
 
+		// CmdIncoming: [0x04][senderLen][sender][msgID(4)][nonce(12)][ct]
 		packet := []byte{CmdIncoming, byte(len(senderBytes))}
 		packet = append(packet, senderBytes...)
+		packet = append(packet,
+			byte(msgID>>24), byte(msgID>>16), byte(msgID>>8), byte(msgID),
+		)
 		packet = append(packet, nonce...)
 		packet = append(packet, ct...)
 		c.Write(packet)
@@ -337,8 +378,13 @@ func broadcastOnlineList() {
 	}
 }
 
-func saveMessage(sender, content string) {
-	db.Exec("INSERT INTO messages (sender, content) VALUES (?, ?)", sender, content)
+func saveMessage(sender, content string) int64 {
+	res, err := db.Exec("INSERT INTO messages (sender, content) VALUES (?, ?)", sender, content)
+	if err != nil {
+		return 0
+	}
+	id, _ := res.LastInsertId()
+	return id
 }
 
 func decryptWith(key, data, nonce []byte) ([]byte, error) {
