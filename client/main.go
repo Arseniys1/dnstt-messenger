@@ -4,13 +4,11 @@ import (
 	"bufio"
 	"crypto/ecdh"
 	"crypto/rand"
-	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"net"
 	"os"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"golang.org/x/crypto/chacha20poly1305"
@@ -24,12 +22,10 @@ type Config struct {
 }
 
 var (
-	cfg         Config
-	sessionID   uint16
-	conn        net.Conn
-	sharedKey   []byte
-	sendCounter atomic.Uint64
-	recvCounter uint64
+	cfg       Config
+	sessionID uint16
+	conn      net.Conn
+	sharedKey []byte
 )
 
 const (
@@ -48,39 +44,41 @@ func main() {
 
 	var err error
 	if cfg.DirectMode {
-		fmt.Printf("🌐 Direct Connect -> %s...\n", cfg.ServerAddr)
+		fmt.Printf("🌐 Режим: Direct Connect | Подключение к: %s...\n", cfg.ServerAddr)
 		conn, err = net.DialTimeout("tcp", cfg.ServerAddr, 10*time.Second)
 	} else {
-		fmt.Printf("🌐 SOCKS5 %s -> %s...\n", cfg.ProxyAddr, cfg.ServerAddr)
+		fmt.Printf("🌐 Режим: DNSTT Proxy (SOCKS5) | Прокси: %s -> Сервер: %s...\n", cfg.ProxyAddr, cfg.ServerAddr)
 		baseDialer := &net.Dialer{Timeout: 10 * time.Second}
 		socks5Dialer, dialErr := proxy.SOCKS5("tcp", cfg.ProxyAddr, nil, baseDialer)
 		if dialErr != nil {
-			fmt.Printf("❌ SOCKS5 dialer: %v\n", dialErr)
+			fmt.Printf("❌ Ошибка создания SOCKS5 диалера: %v\n", dialErr)
 			return
 		}
 		conn, err = socks5Dialer.Dial("tcp", cfg.ServerAddr)
 	}
 	if err != nil {
-		fmt.Printf("❌ Подключение: %v\n", err)
+		fmt.Printf("❌ Ошибка подключения: %v\n", err)
 		return
 	}
 	defer conn.Close()
 
+	// ECDH хендшейк — получаем общий ключ
 	sharedKey, err = ecdhHandshake(conn)
 	if err != nil {
-		fmt.Printf("❌ ECDH: %v\n", err)
+		fmt.Printf("❌ ECDH хендшейк не удался: %v\n", err)
 		return
 	}
 	fmt.Println("🔐 Защищённый канал установлен.")
 
 	reader := bufio.NewReader(os.Stdin)
-	fmt.Println("\n=== DNS Messenger ===")
+	fmt.Println("\n=== DNS Messenger Client ===")
 
 	for {
 		fmt.Println("\n1. Вход\n2. Регистрация")
 		fmt.Print("> ")
 		choice, _ := reader.ReadString('\n')
 		choice = strings.TrimSpace(choice)
+
 		if choice != "1" && choice != "2" {
 			fmt.Println("❌ Введите 1 или 2.")
 			continue
@@ -149,26 +147,41 @@ func main() {
 	}
 }
 
+// ecdhHandshake выполняет X25519 хендшейк.
+// Сервер первым присылает свой публичный ключ (32 байта), клиент отвечает своим.
 func ecdhHandshake(conn net.Conn) ([]byte, error) {
 	curve := ecdh.X25519()
+
 	privKey, err := curve.GenerateKey(rand.Reader)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("генерация ключа: %w", err)
 	}
+
+	// Читаем публичный ключ сервера
 	serverPubBytes := make([]byte, 32)
 	if _, err = readFull(conn, serverPubBytes); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("чтение публичного ключа сервера: %w", err)
 	}
+
 	serverPub, err := curve.NewPublicKey(serverPubBytes)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("парсинг публичного ключа сервера: %w", err)
 	}
+
+	// Отправляем свой публичный ключ
 	if _, err = conn.Write(privKey.PublicKey().Bytes()); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("отправка публичного ключа: %w", err)
 	}
-	return privKey.ECDH(serverPub)
+
+	shared, err := privKey.ECDH(serverPub)
+	if err != nil {
+		return nil, fmt.Errorf("вычисление общего секрета: %w", err)
+	}
+
+	return shared, nil
 }
 
+// readFull читает ровно len(buf) байт.
 func readFull(conn net.Conn, buf []byte) (int, error) {
 	total := 0
 	for total < len(buf) {
@@ -180,6 +193,8 @@ func readFull(conn net.Conn, buf []byte) (int, error) {
 	}
 	return total, nil
 }
+
+// --- СЕТЕВАЯ ЛОГИКА ---
 
 func register(login, pass string) (bool, error) {
 	if len(login) > 255 || len(pass) > 255 {
@@ -213,18 +228,13 @@ func sendMessage(text string) {
 		fmt.Println("❌ Ошибка ключа:", err)
 		return
 	}
+	nonce := make([]byte, aead.NonceSize())
+	rand.Read(nonce)
+	ciphertext := aead.Seal(nil, nonce, []byte(text), nil)
 
-	// nonce: 8-байтный счётчик (little-endian) + 4 нулевых байта
-	cntVal := sendCounter.Add(1)
-	nonce := make([]byte, 12)
-	binary.LittleEndian.PutUint64(nonce[:8], cntVal)
-
-	ct := aead.Seal(nil, nonce, []byte(text), nil)
-
-	// [CmdMsg(1)][nonce(8)][ciphertext]
-	packet := []byte{CmdMsg}
-	packet = append(packet, nonce[:8]...)
-	packet = append(packet, ct...)
+	packet := []byte{CmdMsg, byte(sessionID >> 8), byte(sessionID & 0xFF)}
+	packet = append(packet, nonce...)
+	packet = append(packet, ciphertext...)
 
 	if _, err = conn.Write(packet); err != nil {
 		fmt.Println("❌ Связь разорвана:", err)
@@ -240,7 +250,7 @@ func readLoop(loginDone chan bool, historyDone chan struct{}) {
 	for {
 		n, err := conn.Read(buf)
 		if err != nil {
-			fmt.Println("\n📡 Соединение закрыто.")
+			fmt.Println("\n📡 Соединение закрыто сервером.")
 			os.Exit(0)
 		}
 		if n < 1 {
@@ -253,7 +263,6 @@ func readLoop(loginDone chan bool, historyDone chan struct{}) {
 			switch cmd {
 
 			case CmdLoginOK:
-				// [CmdLoginOK(1)][SID(2)]
 				if len(data) < 3 {
 					data = nil
 					continue
@@ -272,37 +281,38 @@ func readLoop(loginDone chan bool, historyDone chan struct{}) {
 				}
 				data = data[1:]
 
+			case 0x06:
+				data = data[1:]
+
 			case CmdHistory:
-				// [CmdHistory(1)][senderLen(1)][sender][ts uint32 BE(4)][nonce(8)][ciphertext]
-				if len(data) < 15 {
+				if len(data) < 5 {
 					data = nil
 					continue
 				}
 				senderLen := int(data[1])
 				off := 2 + senderLen
-				if len(data) < off+4+8+1 {
+				if len(data) < off+1 {
 					data = nil
 					continue
 				}
 				sender := string(data[2:off])
-				ts := binary.BigEndian.Uint32(data[off : off+4])
-				off += 4
-				nonce := make([]byte, 12)
-				copy(nonce[:8], data[off:off+8])
-				off += 8
-				ciphertext := data[off:]
-
-				// защита от replay
-				if uint64(ts) > recvCounter {
-					recvCounter = uint64(ts)
+				timeLen := int(data[off])
+				off++
+				if len(data) < off+timeLen+2 {
+					data = nil
+					continue
 				}
-
-				plaintext, decErr := decryptMsg(ciphertext, nonce)
-				if decErr == nil {
-					t := time.Unix(int64(ts), 0).Format("2006-01-02 15:04")
-					fmt.Printf("  [%s] %s: %s\n", t, sender, string(plaintext))
+				timeStr := string(data[off : off+timeLen])
+				off += timeLen
+				msgLen := int(data[off])<<8 | int(data[off+1])
+				off += 2
+				if len(data) < off+msgLen {
+					data = nil
+					continue
 				}
-				data = nil // ciphertext до конца пакета
+				text := string(data[off : off+msgLen])
+				fmt.Printf("  [%s] %s: %s\n", timeStr, sender, text)
+				data = data[off+msgLen:]
 
 			case CmdHistoryEnd:
 				if !historyFinished {
@@ -312,24 +322,19 @@ func readLoop(loginDone chan bool, historyDone chan struct{}) {
 				data = data[1:]
 
 			case CmdIncoming:
-				// [CmdIncoming(1)][senderLen(1)][sender][nonce(8)][ciphertext]
-				if len(data) < 11 {
+				if len(data) < 16 {
 					data = nil
 					continue
 				}
 				senderLen := int(data[1])
-				off := 2 + senderLen
-				if len(data) < off+8+1 {
+				if len(data) < 2+senderLen+12+1 {
 					data = nil
 					continue
 				}
 				sender := string(data[2 : 2+senderLen])
-				nonce := make([]byte, 12)
-				copy(nonce[:8], data[off:off+8])
-				off += 8
-				ciphertext := data[off:]
-
-				if plaintext, decErr := decryptMsg(ciphertext, nonce); decErr == nil {
+				nonce := data[2+senderLen : 2+senderLen+12]
+				ciphertext := data[2+senderLen+12:]
+				if plaintext, err := decryptMsg(ciphertext, nonce); err == nil {
 					fmt.Printf("\n📨 [%s]: %s\n>> ", sender, string(plaintext))
 				}
 				data = nil
