@@ -1,10 +1,14 @@
 package com.example.myapplication
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -22,19 +26,27 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.myapplication.ui.theme.MyApplicationTheme
 
 class MainActivity : ComponentActivity() {
+
+    private val requestPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { /* no-op */ }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        Notifications.createChannel(this)
+        requestNotificationPermission()
         enableEdgeToEdge()
         setContent {
             MyApplicationTheme {
@@ -42,11 +54,34 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+
+    private fun requestNotificationPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+                != PackageManager.PERMISSION_GRANTED
+            ) {
+                requestPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
+    }
 }
 
+// ---- App root ----
 @Composable
 fun MessengerApp(vm: MessengerViewModel = viewModel()) {
     val state by vm.state.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+
+    // Show notification for incoming messages when app is in foreground
+    val messages = state.messages
+    val myUsername = state.myUsername
+    LaunchedEffect(messages.size) {
+        val last = messages.lastOrNull()
+        if (last != null && !last.own && myUsername.isNotEmpty()) {
+            Notifications.show(context, last.sender, last.text)
+        }
+    }
+
     when (state.screen) {
         Screen.LOGIN -> LoginScreen(state, vm)
         Screen.CHAT  -> ChatScreen(state, vm)
@@ -87,7 +122,6 @@ fun LoginScreen(state: UiState, vm: MessengerViewModel) {
                 modifier = Modifier.padding(bottom = 24.dp)
             )
 
-            // Tab bar
             TabRow(selectedTabIndex = tab) {
                 Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text("Вход") })
                 Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("Регистрация") })
@@ -174,9 +208,7 @@ fun LoginScreen(state: UiState, vm: MessengerViewModel) {
                     }
                     Spacer(Modifier.height(16.dp))
                     Button(
-                        onClick = {
-                            vm.saveConfig(AppConfig(cfgServer, cfgProxy, cfgDirect))
-                        },
+                        onClick = { vm.saveConfig(AppConfig(cfgServer, cfgProxy, cfgDirect)) },
                         modifier = Modifier.fillMaxWidth()
                     ) { Text("Сохранить") }
                 }
@@ -254,7 +286,6 @@ fun ChatScreen(state: UiState, vm: MessengerViewModel) {
         }
     ) { padding ->
         Row(modifier = Modifier.padding(padding).fillMaxSize()) {
-            // Messages list
             LazyColumn(
                 state = listState,
                 modifier = Modifier.weight(1f).fillMaxHeight(),
@@ -266,7 +297,6 @@ fun ChatScreen(state: UiState, vm: MessengerViewModel) {
                 }
             }
 
-            // Online sidebar
             if (showOnline) {
                 Divider(modifier = Modifier.fillMaxHeight().width(1.dp))
                 Column(
