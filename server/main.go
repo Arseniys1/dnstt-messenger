@@ -30,6 +30,7 @@ const (
 	CmdHistoryEnd = 0x07
 	CmdLoginOK    = 0x08
 	CmdLoginFail  = 0x09
+	CmdOnlineList = 0x0A
 )
 
 var (
@@ -118,6 +119,7 @@ func handleConnection(conn net.Conn) {
 			delete(keys, mySID)
 			sessMu.Unlock()
 			fmt.Printf("👋 Отключился: %s (SID: %d)\n", login, mySID)
+			broadcastOnlineList()
 		}
 	}()
 
@@ -194,7 +196,9 @@ func handleLogin(conn net.Conn, data []byte, sharedKey []byte) uint16 {
 
 		conn.Write([]byte{CmdLoginOK, byte(sid >> 8), byte(sid & 0xFF)})
 		sendHistory(conn)
+		sendOnlineListTo(conn)
 		fmt.Printf("🔑 Вошел: %s (SID: %d)\n", login, sid)
+		broadcastOnlineList()
 		return sid
 	}
 	conn.Write([]byte{CmdLoginFail})
@@ -304,6 +308,33 @@ func sendHistory(conn net.Conn) {
 	}
 
 	conn.Write([]byte{CmdHistoryEnd})
+}
+
+// buildOnlinePacket строит компактный пакет со списком онлайн пользователей.
+// Формат: [0x0A][count][len1][name1]...[lenN][nameN]
+func buildOnlinePacket() []byte {
+	sessMu.RLock()
+	defer sessMu.RUnlock()
+	packet := []byte{CmdOnlineList, byte(len(sessions))}
+	for _, name := range sessions {
+		b := []byte(name)
+		packet = append(packet, byte(len(b)))
+		packet = append(packet, b...)
+	}
+	return packet
+}
+
+func sendOnlineListTo(conn net.Conn) {
+	conn.Write(buildOnlinePacket())
+}
+
+func broadcastOnlineList() {
+	packet := buildOnlinePacket()
+	sessMu.RLock()
+	defer sessMu.RUnlock()
+	for _, c := range conns {
+		c.Write(packet)
+	}
 }
 
 func saveMessage(sender, content string) {

@@ -37,6 +37,7 @@ const (
 	CmdHistoryEnd = 0x07
 	CmdLoginOK    = 0x08
 	CmdLoginFail  = 0x09
+	CmdOnlineList = 0x0A
 )
 
 func main() {
@@ -338,6 +339,34 @@ func readLoop(loginDone chan bool, historyDone chan struct{}) {
 					fmt.Printf("\n📨 [%s]: %s\n>> ", sender, string(plaintext))
 				}
 				data = nil
+
+			case CmdOnlineList:
+				if len(data) < 2 {
+					data = nil
+					continue
+				}
+				count := int(data[1])
+				off := 2
+				names := make([]string, 0, count)
+				valid := true
+				for i := 0; i < count; i++ {
+					if off >= len(data) {
+						valid = false
+						break
+					}
+					nLen := int(data[off])
+					off++
+					if off+nLen > len(data) {
+						valid = false
+						break
+					}
+					names = append(names, string(data[off:off+nLen]))
+					off += nLen
+				}
+				if valid {
+					fmt.Printf("\n🟢 Онлайн (%d): %s\n>> ", len(names), strings.Join(names, ", "))
+				}
+				data = data[off:]
 
 			default:
 				data = data[1:]
