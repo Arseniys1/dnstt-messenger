@@ -1,0 +1,38 @@
+{
+  "name": "dnstt-messenger",
+  "version": "1.0.0",
+  "description": "DNSTT Messenger - encrypted chat over DNS tunnel",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build:win": "electron-builder --win",
+    "build:linux": "electron-builder --linux",
+    "build:mac": "electron-builder --mac"
+  },
+  "build": {
+    "appId": "com.dnstt.messenger",
+    "productName": "DNSTT Messenger",
+    "files": [
+      "**/*",
+      "!node_modules/.cache"
+    ],
+    "win": {
+      "target": "nsis"
+    },
+    "linux": {
+      "target": "AppImage"
+    },
+    "mac": {
+      "target": "dmg"
+    }
+  },
+  "dependencies": {
+    "@noble/ciphers": "^2.1.1",
+    "@noble/curves": "^2.0.1",
+    "socks": "^2.8.3"
+  },
+  "devDependencies": {
+    "electron": "^31.0.0",
+    "electron-builder": "^24.0.0"
+  }
+}
