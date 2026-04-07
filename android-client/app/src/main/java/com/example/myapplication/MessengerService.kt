@@ -10,7 +10,10 @@ import kotlinx.coroutines.flow.StateFlow
 
 /**
  * ForegroundService — держит TCP соединение живым когда приложение свёрнуто.
+ *
+ * Запускается через startForegroundService() и живёт независимо от UI.
  * UI биндится к сервису и получает события через StateFlow.
+ * START_STICKY гарантирует перезапуск системой если процесс убит.
  */
 class MessengerService : Service() {
 
@@ -27,17 +30,27 @@ class MessengerService : Service() {
     val events: StateFlow<ServerEvent?> = _events
 
     private var readJob: Job? = null
-    private var isConnected = false
 
     // ---- Lifecycle ----
 
     override fun onCreate() {
         super.onCreate()
         Notifications.createChannel(this)
+        // Must call startForeground immediately in onCreate to avoid ANR on Android 8+
         startForeground(NOTIF_ID_SERVICE, buildServiceNotification())
     }
 
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // START_STICKY: system restarts service after kill, intent will be null on restart
+        return START_STICKY
+    }
+
     override fun onBind(intent: Intent): IBinder = binder
+
+    // Called when last client unbinds — do NOT stop, keep running
+    override fun onUnbind(intent: Intent?): Boolean {
+        return true // allow rebind
+    }
 
     override fun onDestroy() {
         scope.cancel()
@@ -47,11 +60,7 @@ class MessengerService : Service() {
 
     // ---- API called from ViewModel ----
 
-    suspend fun connect(cfg: AppConfig): Result<Unit> {
-        val result = client.connect(cfg)
-        if (result.isSuccess) isConnected = true
-        return result
-    }
+    suspend fun connect(cfg: AppConfig): Result<Unit> = client.connect(cfg)
 
     suspend fun register(login: String, pass: String) = client.register(login, pass)
 
@@ -65,18 +74,10 @@ class MessengerService : Service() {
             while (isActive) {
                 val event = client.readEvent() ?: continue
                 _events.value = event
-                // Show notification for incoming messages
                 if (event is ServerEvent.Message && event.msg.sender != myUsername) {
-                    Notifications.show(
-                        applicationContext,
-                        event.msg.sender,
-                        event.msg.text
-                    )
+                    Notifications.show(applicationContext, event.msg.sender, event.msg.text)
                 }
-                if (event is ServerEvent.Disconnected) {
-                    isConnected = false
-                    break
-                }
+                if (event is ServerEvent.Disconnected) break
             }
         }
     }
@@ -84,7 +85,6 @@ class MessengerService : Service() {
     fun stopConnection() {
         readJob?.cancel()
         client.destroy()
-        isConnected = false
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }

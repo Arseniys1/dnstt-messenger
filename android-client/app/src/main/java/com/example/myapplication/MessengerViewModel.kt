@@ -5,6 +5,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
+import android.os.Build
 import android.os.IBinder
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -60,8 +61,15 @@ class MessengerViewModel(app: Application) : AndroidViewModel(app) {
     private fun bindService() {
         val ctx = getApplication<Application>()
         val intent = Intent(ctx, MessengerService::class.java)
-        ctx.startService(intent)
-        ctx.bindService(intent, connection, Context.BIND_AUTO_CREATE)
+        // Start as foreground service so it survives when UI is gone
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            ctx.startForegroundService(intent)
+        } else {
+            ctx.startService(intent)
+        }
+        // Bind WITHOUT BIND_AUTO_CREATE — service must already be started above
+        // This way unbinding does NOT stop the service
+        ctx.bindService(intent, connection, 0)
     }
 
     // ---- Config ----
