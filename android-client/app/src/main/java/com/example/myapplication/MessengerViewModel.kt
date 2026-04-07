@@ -1,11 +1,13 @@
 package com.example.myapplication
 
 import android.app.Application
+import android.content.ComponentName
 import android.content.Context
+import android.content.Intent
+import android.content.ServiceConnection
+import android.os.IBinder
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
@@ -30,8 +32,37 @@ class MessengerViewModel(app: Application) : AndroidViewModel(app) {
     private val _state = MutableStateFlow(UiState(config = loadConfig()))
     val state: StateFlow<UiState> = _state
 
-    private var client: MessengerClient? = null
-    private var readJob: Job? = null
+    private var service: MessengerService? = null
+    private var bound = false
+
+    private val connection = object : ServiceConnection {
+        override fun onServiceConnected(name: ComponentName, binder: IBinder) {
+            service = (binder as MessengerService.LocalBinder).getService()
+            bound = true
+            // Subscribe to events from service
+            viewModelScope.launch {
+                service!!.events.collect { event ->
+                    event ?: return@collect
+                    handleEvent(event)
+                }
+            }
+        }
+        override fun onServiceDisconnected(name: ComponentName) {
+            bound = false
+            service = null
+        }
+    }
+
+    init {
+        bindService()
+    }
+
+    private fun bindService() {
+        val ctx = getApplication<Application>()
+        val intent = Intent(ctx, MessengerService::class.java)
+        ctx.startService(intent)
+        ctx.bindService(intent, connection, Context.BIND_AUTO_CREATE)
+    }
 
     // ---- Config ----
     fun loadConfig(): AppConfig {
@@ -62,6 +93,7 @@ class MessengerViewModel(app: Application) : AndroidViewModel(app) {
         }
         viewModelScope.launch {
             setStatus("Подключение...", loading = true)
+            // For register we use a temporary client (no service needed)
             val c = MessengerClient()
             val connResult = c.connect(_state.value.config)
             if (connResult.isFailure) {
@@ -85,22 +117,21 @@ class MessengerViewModel(app: Application) : AndroidViewModel(app) {
             setStatus("Заполните все поля", error = true); return
         }
         viewModelScope.launch {
+            val svc = service ?: run {
+                setStatus("Сервис не готов, попробуйте снова", error = true); return@launch
+            }
             setStatus("Подключение...", loading = true)
-            val c = MessengerClient()
-            val connResult = c.connect(_state.value.config)
+            val connResult = svc.connect(_state.value.config)
             if (connResult.isFailure) {
-                c.destroy()
                 setStatus("Ошибка подключения: ${connResult.exceptionOrNull()?.message}", error = true)
                 return@launch
             }
             setStatus("Авторизация...", loading = true)
-            val loginResult = c.login(login, pass)
+            val loginResult = svc.login(login, pass)
             if (loginResult.isFailure) {
-                c.destroy()
                 setStatus("Неверный логин или пароль", error = true)
                 return@launch
             }
-            client = c
             _state.value = _state.value.copy(
                 screen = Screen.CHAT,
                 myUsername = login,
@@ -110,7 +141,7 @@ class MessengerViewModel(app: Application) : AndroidViewModel(app) {
                 isLoading = false,
                 isError = false
             )
-            startReadLoop()
+            svc.startReadLoop(login)
         }
     }
 
@@ -119,24 +150,17 @@ class MessengerViewModel(app: Application) : AndroidViewModel(app) {
         val trimmed = text.trim()
         if (trimmed.isEmpty()) return
         viewModelScope.launch {
-            client?.sendMessage(trimmed)
+            service?.sendMessage(trimmed)
             val now = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault())
                 .format(java.util.Date())
-            val msg = ChatMessage(
-                sender = _state.value.myUsername,
-                text   = trimmed,
-                time   = now,
-                own    = true
-            )
+            val msg = ChatMessage(sender = _state.value.myUsername, text = trimmed, time = now, own = true)
             _state.value = _state.value.copy(messages = _state.value.messages + msg)
         }
     }
 
     // ---- Logout ----
     fun logout() {
-        readJob?.cancel()
-        client?.destroy()
-        client = null
+        service?.stopConnection()
         _state.value = _state.value.copy(
             screen = Screen.LOGIN,
             messages = emptyList(),
@@ -144,42 +168,34 @@ class MessengerViewModel(app: Application) : AndroidViewModel(app) {
             myUsername = "",
             status = ""
         )
+        // Rebind fresh service for next login
+        bindService()
     }
 
-    // ---- Read loop ----
-    private fun startReadLoop() {
-        readJob?.cancel()
-        readJob = viewModelScope.launch(Dispatchers.IO) {
-            val c = client ?: return@launch
-            while (true) {
-                val event = c.readEvent() ?: continue
-                when (event) {
-                    is ServerEvent.History -> {
-                        val msg = event.msg.copy(own = event.msg.sender == _state.value.myUsername)
-                        _state.value = _state.value.copy(messages = _state.value.messages + msg)
-                    }
-                    is ServerEvent.HistoryEnd -> {
-                        // history loaded — no special action needed
-                    }
-                    is ServerEvent.Message -> {
-                        val msg = event.msg.copy(own = event.msg.sender == _state.value.myUsername)
-                        _state.value = _state.value.copy(messages = _state.value.messages + msg)
-                    }
-                    is ServerEvent.OnlineList -> {
-                        _state.value = _state.value.copy(onlineUsers = event.users)
-                    }
-                    is ServerEvent.Disconnected -> {
-                        _state.value = _state.value.copy(
-                            screen = Screen.LOGIN,
-                            status = "Соединение разорвано",
-                            isError = true,
-                            messages = emptyList(),
-                            onlineUsers = emptyList()
-                        )
-                        client = null
-                        break
-                    }
-                }
+    // ---- Handle events from service ----
+    private fun handleEvent(event: ServerEvent) {
+        when (event) {
+            is ServerEvent.History -> {
+                val msg = event.msg.copy(own = event.msg.sender == _state.value.myUsername)
+                _state.value = _state.value.copy(messages = _state.value.messages + msg)
+            }
+            is ServerEvent.HistoryEnd -> { /* no-op */ }
+            is ServerEvent.Message -> {
+                val msg = event.msg.copy(own = event.msg.sender == _state.value.myUsername)
+                _state.value = _state.value.copy(messages = _state.value.messages + msg)
+            }
+            is ServerEvent.OnlineList -> {
+                _state.value = _state.value.copy(onlineUsers = event.users)
+            }
+            is ServerEvent.Disconnected -> {
+                _state.value = _state.value.copy(
+                    screen = Screen.LOGIN,
+                    status = "Соединение разорвано",
+                    isError = true,
+                    messages = emptyList(),
+                    onlineUsers = emptyList()
+                )
+                bindService()
             }
         }
     }
@@ -190,6 +206,9 @@ class MessengerViewModel(app: Application) : AndroidViewModel(app) {
 
     override fun onCleared() {
         super.onCleared()
-        client?.destroy()
+        if (bound) {
+            getApplication<Application>().unbindService(connection)
+            bound = false
+        }
     }
 }

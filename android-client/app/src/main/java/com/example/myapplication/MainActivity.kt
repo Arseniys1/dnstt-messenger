@@ -26,7 +26,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -70,17 +69,6 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun MessengerApp(vm: MessengerViewModel = viewModel()) {
     val state by vm.state.collectAsStateWithLifecycle()
-    val context = LocalContext.current
-
-    // Show notification for incoming messages when app is in foreground
-    val messages = state.messages
-    val myUsername = state.myUsername
-    LaunchedEffect(messages.size) {
-        val last = messages.lastOrNull()
-        if (last != null && !last.own && myUsername.isNotEmpty()) {
-            Notifications.show(context, last.sender, last.text)
-        }
-    }
 
     when (state.screen) {
         Screen.LOGIN -> LoginScreen(state, vm)
