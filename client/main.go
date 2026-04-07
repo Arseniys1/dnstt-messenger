@@ -34,12 +34,13 @@ const (
 	CmdIncoming   = 0x04
 	CmdHistory    = 0x05
 	CmdHistoryEnd = 0x07
+	CmdLoginOK    = 0x08
+	CmdLoginFail  = 0x09
 )
 
 func main() {
 	loadConfig("client_config.json")
 
-	// Validate key length for chacha20poly1305 (must be 32 bytes)
 	if len(cfg.SharedKey) != 32 {
 		fmt.Printf("❌ shared_key должен быть ровно 32 символа (сейчас %d)\n", len(cfg.SharedKey))
 		return
@@ -67,10 +68,9 @@ func main() {
 	defer conn.Close()
 
 	reader := bufio.NewReader(os.Stdin)
-
 	fmt.Println("\n=== DNS Messenger Client ===")
 
-	for sessionID == 0 {
+	for {
 		fmt.Println("\n1. Вход\n2. Регистрация")
 		fmt.Print("> ")
 		choice, _ := reader.ReadString('\n')
@@ -98,23 +98,40 @@ func main() {
 		}
 
 		if choice == "2" {
-			if register(login, pass) {
+			ok, err := register(login, pass)
+			if err != nil {
+				fmt.Println("❌ Ошибка связи:", err)
+				return
+			}
+			if ok {
 				fmt.Println("✨ Аккаунт создан! Теперь войдите.")
+			} else {
+				fmt.Println("❌ Логин уже занят.")
 			}
-		} else {
-			loginUser(login, pass)
-			if sessionID == 0 {
-				fmt.Println("❌ Неверный логин или пароль.")
-			}
+			continue
 		}
-	}
 
-	// Получаем историю до открытия чата
-	fmt.Println("\n--- История чата ---")
-	historyDone := make(chan struct{})
-	go readLoop(historyDone)
-	<-historyDone
-	fmt.Println("--- Конец истории ---\n")
+		// Логин — отправляем пакет и запускаем readLoop
+		// readLoop сам установит sessionID через канал
+		loginDone := make(chan bool, 1)
+		historyDone := make(chan struct{})
+
+		sendLoginPacket(login, pass)
+		go readLoop(loginDone, historyDone)
+
+		ok := <-loginDone
+		if !ok {
+			fmt.Println("❌ Неверный логин или пароль.")
+			// readLoop завершится сам при следующей ошибке чтения или мы переподключаемся
+			// Для простоты — выходим, пользователь перезапустит
+			return
+		}
+
+		fmt.Println("\n--- История чата ---")
+		<-historyDone
+		fmt.Println("--- Конец истории ---\n")
+		break
+	}
 
 	fmt.Println("✅ Авторизация успешна! (/exit для выхода)")
 
@@ -129,51 +146,36 @@ func main() {
 		if text == "" {
 			continue
 		}
-
 		sendMessage(text)
 	}
 }
 
 // --- СЕТЕВАЯ ЛОГИКА ---
 
-func register(login, pass string) bool {
+func register(login, pass string) (bool, error) {
 	if len(login) > 255 || len(pass) > 255 {
-		fmt.Println("❌ Слишком длинные данные.")
-		return false
+		return false, fmt.Errorf("слишком длинные данные")
 	}
 	packet := []byte{CmdRegister, byte(len(login))}
 	packet = append(packet, []byte(login)...)
 	packet = append(packet, []byte(pass)...)
-
 	conn.Write(packet)
 
 	res := make([]byte, 1)
 	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-	conn.Read(res)
+	_, err := conn.Read(res)
 	conn.SetReadDeadline(time.Time{})
-
-	if res[0] == 0x01 {
-		return true
+	if err != nil {
+		return false, err
 	}
-	fmt.Println("❌ Логин уже занят.")
-	return false
+	return res[0] == 0x01, nil
 }
 
-func loginUser(login, pass string) {
+func sendLoginPacket(login, pass string) {
 	packet := []byte{CmdLogin, byte(len(login))}
 	packet = append(packet, []byte(login)...)
 	packet = append(packet, []byte(pass)...)
-
 	conn.Write(packet)
-
-	res := make([]byte, 2)
-	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-	n, _ := conn.Read(res)
-	conn.SetReadDeadline(time.Time{})
-
-	if n == 2 && (res[0] != 0 || res[1] != 0) {
-		sessionID = uint16(res[0])<<8 | uint16(res[1])
-	}
 }
 
 func sendMessage(text string) {
@@ -182,10 +184,8 @@ func sendMessage(text string) {
 		fmt.Println("❌ Ошибка ключа:", err)
 		return
 	}
-
 	nonce := make([]byte, aead.NonceSize())
 	rand.Read(nonce)
-
 	ciphertext := aead.Seal(nil, nonce, []byte(text), nil)
 
 	// [CMD(1)][SID(2)][Nonce(12)][Ciphertext]
@@ -200,9 +200,13 @@ func sendMessage(text string) {
 	}
 }
 
-func readLoop(historyDone chan struct{}) {
-	buf := make([]byte, 2048)
+// readLoop читает все входящие пакеты.
+// loginDone получает true/false по результату логина (nil = уже авторизованы).
+// historyDone закрывается когда получен CmdHistoryEnd.
+func readLoop(loginDone chan bool, historyDone chan struct{}) {
+	buf := make([]byte, 4096)
 	historyFinished := false
+	loginHandled := false
 
 	for {
 		n, err := conn.Read(buf)
@@ -214,59 +218,98 @@ func readLoop(historyDone chan struct{}) {
 			continue
 		}
 
-		switch buf[0] {
+		// Обрабатываем все пакеты в буфере (могут прийти склеенными)
+		data := buf[:n]
+		for len(data) > 0 {
+			cmd := data[0]
+			switch cmd {
 
-		case 0x06:
-			// ACK — игнорируем
+			case CmdLoginOK:
+				// [CmdLoginOK(1)][SID_hi(1)][SID_lo(1)]
+				if len(data) < 3 {
+					data = nil
+					continue
+				}
+				sessionID = uint16(data[1])<<8 | uint16(data[2])
+				if !loginHandled {
+					loginHandled = true
+					loginDone <- true
+				}
+				data = data[3:]
 
-		case CmdHistory:
-			if n < 5 {
-				continue
-			}
-			senderLen := int(buf[1])
-			off := 2 + senderLen
-			if n < off+1 {
-				continue
-			}
-			sender := string(buf[2:off])
-			timeLen := int(buf[off])
-			off++
-			if n < off+timeLen+2 {
-				continue
-			}
-			timeStr := string(buf[off : off+timeLen])
-			off += timeLen
-			msgLen := int(buf[off])<<8 | int(buf[off+1])
-			off += 2
-			if n < off+msgLen {
-				continue
-			}
-			text := string(buf[off : off+msgLen])
-			fmt.Printf("  [%s] %s: %s\n", timeStr, sender, text)
+			case CmdLoginFail:
+				if !loginHandled {
+					loginHandled = true
+					loginDone <- false
+				}
+				data = data[1:]
 
-		case CmdHistoryEnd:
-			if !historyFinished {
-				historyFinished = true
-				close(historyDone)
-			}
+			case 0x06:
+				// ACK
+				data = data[1:]
 
-		case CmdIncoming:
-			if n < 16 {
-				continue
-			}
-			senderLen := int(buf[1])
-			if n < 2+senderLen+12+1 {
-				continue
-			}
-			sender := string(buf[2 : 2+senderLen])
-			nonce := buf[2+senderLen : 2+senderLen+12]
-			ciphertext := buf[2+senderLen+12 : n]
+			case CmdHistory:
+				// [CmdHistory(1)][SenderLen(1)][Sender][TimeLen(1)][Time][MsgLen(2)][Text]
+				if len(data) < 5 {
+					data = nil
+					continue
+				}
+				senderLen := int(data[1])
+				off := 2 + senderLen
+				if len(data) < off+1 {
+					data = nil
+					continue
+				}
+				sender := string(data[2:off])
+				timeLen := int(data[off])
+				off++
+				if len(data) < off+timeLen+2 {
+					data = nil
+					continue
+				}
+				timeStr := string(data[off : off+timeLen])
+				off += timeLen
+				msgLen := int(data[off])<<8 | int(data[off+1])
+				off += 2
+				if len(data) < off+msgLen {
+					data = nil
+					continue
+				}
+				text := string(data[off : off+msgLen])
+				fmt.Printf("  [%s] %s: %s\n", timeStr, sender, text)
+				data = data[off+msgLen:]
 
-			plaintext, err := decryptMsg(ciphertext, nonce)
-			if err != nil {
-				continue
+			case CmdHistoryEnd:
+				if !historyFinished {
+					historyFinished = true
+					close(historyDone)
+				}
+				data = data[1:]
+
+			case CmdIncoming:
+				// [CmdIncoming(1)][SenderLen(1)][Sender][Nonce(12)][Ciphertext]
+				if len(data) < 16 {
+					data = nil
+					continue
+				}
+				senderLen := int(data[1])
+				if len(data) < 2+senderLen+12+1 {
+					data = nil
+					continue
+				}
+				sender := string(data[2 : 2+senderLen])
+				nonce := data[2+senderLen : 2+senderLen+12]
+				ciphertext := data[2+senderLen+12:]
+				plaintext, err := decryptMsg(ciphertext, nonce)
+				if err == nil {
+					fmt.Printf("\n📨 [%s]: %s\n>> ", sender, string(plaintext))
+				}
+				data = nil // ciphertext идёт до конца буфера
+
+			default:
+				// Неизвестный байт — пропускаем
+				data = data[1:]
 			}
-			fmt.Printf("\n📨 [%s]: %s\n>> ", sender, string(plaintext))
 		}
 	}
 }
@@ -286,7 +329,6 @@ func loadConfig(path string) {
 		DirectMode: false,
 		SharedKey:  "12345678901234567890123456789012",
 	}
-
 	file, err := os.Open(path)
 	if err == nil {
 		defer file.Close()

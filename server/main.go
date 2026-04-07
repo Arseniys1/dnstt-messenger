@@ -27,6 +27,8 @@ const (
 	CmdIncoming  = 0x04
 	CmdHistory   = 0x05
 	CmdHistoryEnd = 0x07
+	CmdLoginOK   = 0x08
+	CmdLoginFail = 0x09
 )
 
 var (
@@ -128,13 +130,13 @@ func handleLogin(conn net.Conn, data []byte) uint16 {
 		conns[sid] = conn
 		sessMu.Unlock()
 
-		// Сначала SID, затем история
-		conn.Write([]byte{byte(sid >> 8), byte(sid & 0xFF)})
+		// [CmdLoginOK(1)][SID_hi(1)][SID_lo(1)] затем история
+		conn.Write([]byte{CmdLoginOK, byte(sid >> 8), byte(sid & 0xFF)})
 		sendHistory(conn)
 		fmt.Printf("🔑 Вошел: %s (SID: %d)\n", login, sid)
 		return sid
 	}
-	conn.Write([]byte{0x00, 0x00})
+	conn.Write([]byte{CmdLoginFail})
 	return 0
 }
 
