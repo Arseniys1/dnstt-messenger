@@ -101,7 +101,7 @@ func handleConnection(conn net.Conn) {
 func handleRegister(conn net.Conn, data []byte) {
 	lLen := int(data[0])
 	login := string(data[1 : 1+lLen])
-	pass := string(data[2+lLen:])
+	pass := string(data[1+lLen:])
 
 	_, err := db.Exec("INSERT INTO users (login, password) VALUES (?, ?)", login, pass)
 	if err != nil {
@@ -115,7 +115,7 @@ func handleRegister(conn net.Conn, data []byte) {
 func handleLogin(conn net.Conn, data []byte) uint16 {
 	lLen := int(data[0])
 	login := string(data[1 : 1+lLen])
-	pass := string(data[2+lLen:])
+	pass := string(data[1+lLen:])
 
 	var storedPass string
 	err := db.QueryRow("SELECT password FROM users WHERE login = ?", login).Scan(&storedPass)
