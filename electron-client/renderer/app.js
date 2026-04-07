@@ -114,8 +114,7 @@ function registerListeners() {
   });
 
   window.api.onAck((msgId) => {
-    // Привязываем серверный msgId к последнему сообщению без него
-    const el = messages.querySelector('.msg.own:not([data-msg-id])');
+    const el = pendingAckQueue.shift();
     if (el) el.dataset.msgId = msgId;
   });
 
@@ -158,15 +157,20 @@ function showConnect() {
   screenConnect.classList.add('active');
 }
 
-function appendMessage(sender, text, time, own, msgId = null, localId = null) {
+// Очередь собственных сообщений ожидающих ACK (FIFO)
+const pendingAckQueue = [];
+
+function appendMessage(sender, text, time, own, msgId = null) {
   const div = document.createElement('div');
   div.className = 'msg ' + (own ? 'own' : 'other');
-  if (msgId)   div.dataset.msgId   = msgId;
-  if (localId) div.dataset.localId = localId;
+  if (msgId) div.dataset.msgId = msgId;
 
   const ticks = own ? '<span class="ticks">✓</span>' : '';
   div.innerHTML = `<div class="meta">${escHtml(own ? 'Вы' : sender)} · ${escHtml(time)}${ticks}</div>${escHtml(text)}`;
   messages.appendChild(div);
+
+  if (own && !msgId) pendingAckQueue.push(div);
+  return div;
 }
 
 function appendDivider(text) {
@@ -205,12 +209,13 @@ msgInput.addEventListener('keydown', e => {
 function sendMsg() {
   const text = msgInput.value.trim();
   if (!text || !connected) return;
-  const localId = window.api.sendMessage(text); // возвращает Promise
   const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  // localId — Promise, ждём его
-  Promise.resolve(localId).then(id => {
-    appendMessage(myUsername, text, now, true, null, id);
-    scrollBottom();
+  // Добавляем сообщение синхронно, до IPC вызова
+  const el = appendMessage(myUsername, text, now, true);
+  scrollBottom();
+  // IPC вызов — когда придёт ACK с msgId, привяжем его к этому элементу
+  window.api.sendMessage(text).then(localId => {
+    if (localId && el) el.dataset.localId = localId;
   });
   msgInput.value = '';
   msgInput.style.height = 'auto';
@@ -225,6 +230,7 @@ msgInput.addEventListener('input', () => {
 // --- Logout ---
 document.getElementById('btn-logout').addEventListener('click', async () => {
   connected = false;
+  pendingAckQueue.length = 0;
   await window.api.disconnect();
   showConnect();
   setStatus('');
