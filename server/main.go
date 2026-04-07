@@ -37,6 +37,7 @@ var (
 	db         *sql.DB
 	sessions   = make(map[uint16]string)
 	conns      = make(map[uint16]net.Conn)
+	keys       = make(map[uint16][]byte) // SID -> sharedKey
 	sessMu     sync.RWMutex
 	sidCounter uint16
 )
@@ -114,6 +115,7 @@ func handleConnection(conn net.Conn) {
 			login := sessions[mySID]
 			delete(sessions, mySID)
 			delete(conns, mySID)
+			delete(keys, mySID)
 			sessMu.Unlock()
 			fmt.Printf("👋 Отключился: %s (SID: %d)\n", login, mySID)
 		}
@@ -136,7 +138,7 @@ func handleConnection(conn net.Conn) {
 		case CmdRegister:
 			handleRegister(conn, payload)
 		case CmdLogin:
-			mySID = handleLogin(conn, payload)
+			mySID = handleLogin(conn, payload, sharedKey)
 		case CmdMsg:
 			handleMessage(conn, mySID, payload, sharedKey)
 		}
@@ -165,7 +167,7 @@ func handleRegister(conn net.Conn, data []byte) {
 	conn.Write([]byte{0x01})
 }
 
-func handleLogin(conn net.Conn, data []byte) uint16 {
+func handleLogin(conn net.Conn, data []byte, sharedKey []byte) uint16 {
 	if len(data) < 2 {
 		conn.Write([]byte{CmdLoginFail})
 		return 0
@@ -187,6 +189,7 @@ func handleLogin(conn net.Conn, data []byte) uint16 {
 		sid := sidCounter
 		sessions[sid] = login
 		conns[sid] = conn
+		keys[sid] = sharedKey
 		sessMu.Unlock()
 
 		conn.Write([]byte{CmdLoginOK, byte(sid >> 8), byte(sid & 0xFF)})
@@ -222,22 +225,35 @@ func handleMessage(conn net.Conn, senderSID uint16, data []byte, sharedKey []byt
 	fmt.Printf("📩 [%s]: %s\n", user, string(decrypted))
 	conn.Write([]byte{0x06})
 
-	broadcastEncrypted(senderSID, user, nonce, ciphertext)
+	broadcastEncrypted(senderSID, user, decrypted)
 }
 
-func broadcastEncrypted(senderSID uint16, senderName string, nonce, ciphertext []byte) {
+func broadcastEncrypted(senderSID uint16, senderName string, plaintext []byte) {
 	senderBytes := []byte(senderName)
-	packet := []byte{CmdIncoming, byte(len(senderBytes))}
-	packet = append(packet, senderBytes...)
-	packet = append(packet, nonce...)
-	packet = append(packet, ciphertext...)
 
 	sessMu.RLock()
 	defer sessMu.RUnlock()
+
 	for sid, c := range conns {
-		if sid != senderSID {
-			c.Write(packet)
+		if sid == senderSID {
+			continue
 		}
+		key := keys[sid]
+		aead, err := chacha20poly1305.New(key)
+		if err != nil {
+			continue
+		}
+		nonce := make([]byte, aead.NonceSize())
+		if _, err = rand.Read(nonce); err != nil {
+			continue
+		}
+		ct := aead.Seal(nil, nonce, plaintext, nil)
+
+		packet := []byte{CmdIncoming, byte(len(senderBytes))}
+		packet = append(packet, senderBytes...)
+		packet = append(packet, nonce...)
+		packet = append(packet, ct...)
+		c.Write(packet)
 	}
 }
 
