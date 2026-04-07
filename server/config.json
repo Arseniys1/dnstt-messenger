@@ -1,6 +1,6 @@
 {
   "listen_addr": "0.0.0.0:9999",
   "db_path": "./messenger.db",
-  "shared_key": "12345678901234567890123456789012",
-  "min_packet_size": 4
+  "min_packet_size": 2,
+  "history_limit": 50
 }

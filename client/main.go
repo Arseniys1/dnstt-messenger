@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"crypto/ecdh"
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
@@ -18,13 +19,13 @@ type Config struct {
 	ProxyAddr  string `json:"proxy_addr"`
 	ServerAddr string `json:"server_addr"`
 	DirectMode bool   `json:"direct_mode"`
-	SharedKey  string `json:"shared_key"`
 }
 
 var (
 	cfg       Config
 	sessionID uint16
 	conn      net.Conn
+	sharedKey []byte
 )
 
 const (
@@ -41,11 +42,6 @@ const (
 func main() {
 	loadConfig("client_config.json")
 
-	if len(cfg.SharedKey) != 32 {
-		fmt.Printf("❌ shared_key должен быть ровно 32 символа (сейчас %d)\n", len(cfg.SharedKey))
-		return
-	}
-
 	var err error
 	if cfg.DirectMode {
 		fmt.Printf("🌐 Режим: Direct Connect | Подключение к: %s...\n", cfg.ServerAddr)
@@ -60,12 +56,19 @@ func main() {
 		}
 		conn, err = socks5Dialer.Dial("tcp", cfg.ServerAddr)
 	}
-
 	if err != nil {
 		fmt.Printf("❌ Ошибка подключения: %v\n", err)
 		return
 	}
 	defer conn.Close()
+
+	// ECDH хендшейк — получаем общий ключ
+	sharedKey, err = ecdhHandshake(conn)
+	if err != nil {
+		fmt.Printf("❌ ECDH хендшейк не удался: %v\n", err)
+		return
+	}
+	fmt.Println("🔐 Защищённый канал установлен.")
 
 	reader := bufio.NewReader(os.Stdin)
 	fmt.Println("\n=== DNS Messenger Client ===")
@@ -98,9 +101,9 @@ func main() {
 		}
 
 		if choice == "2" {
-			ok, err := register(login, pass)
-			if err != nil {
-				fmt.Println("❌ Ошибка связи:", err)
+			ok, regErr := register(login, pass)
+			if regErr != nil {
+				fmt.Println("❌ Ошибка связи:", regErr)
 				return
 			}
 			if ok {
@@ -111,19 +114,13 @@ func main() {
 			continue
 		}
 
-		// Логин — отправляем пакет и запускаем readLoop
-		// readLoop сам установит sessionID через канал
 		loginDone := make(chan bool, 1)
 		historyDone := make(chan struct{})
-
 		sendLoginPacket(login, pass)
 		go readLoop(loginDone, historyDone)
 
-		ok := <-loginDone
-		if !ok {
+		if ok := <-loginDone; !ok {
 			fmt.Println("❌ Неверный логин или пароль.")
-			// readLoop завершится сам при следующей ошибке чтения или мы переподключаемся
-			// Для простоты — выходим, пользователь перезапустит
 			return
 		}
 
@@ -135,11 +132,11 @@ func main() {
 
 	fmt.Println("✅ Авторизация успешна! (/exit для выхода)")
 
+	reader2 := bufio.NewReader(os.Stdin)
 	for {
 		fmt.Print(">> ")
-		text, _ := reader.ReadString('\n')
+		text, _ := reader2.ReadString('\n')
 		text = strings.TrimSpace(text)
-
 		if text == "/exit" {
 			break
 		}
@@ -148,6 +145,53 @@ func main() {
 		}
 		sendMessage(text)
 	}
+}
+
+// ecdhHandshake выполняет X25519 хендшейк.
+// Сервер первым присылает свой публичный ключ (32 байта), клиент отвечает своим.
+func ecdhHandshake(conn net.Conn) ([]byte, error) {
+	curve := ecdh.X25519()
+
+	privKey, err := curve.GenerateKey(rand.Reader)
+	if err != nil {
+		return nil, fmt.Errorf("генерация ключа: %w", err)
+	}
+
+	// Читаем публичный ключ сервера
+	serverPubBytes := make([]byte, 32)
+	if _, err = readFull(conn, serverPubBytes); err != nil {
+		return nil, fmt.Errorf("чтение публичного ключа сервера: %w", err)
+	}
+
+	serverPub, err := curve.NewPublicKey(serverPubBytes)
+	if err != nil {
+		return nil, fmt.Errorf("парсинг публичного ключа сервера: %w", err)
+	}
+
+	// Отправляем свой публичный ключ
+	if _, err = conn.Write(privKey.PublicKey().Bytes()); err != nil {
+		return nil, fmt.Errorf("отправка публичного ключа: %w", err)
+	}
+
+	shared, err := privKey.ECDH(serverPub)
+	if err != nil {
+		return nil, fmt.Errorf("вычисление общего секрета: %w", err)
+	}
+
+	return shared, nil
+}
+
+// readFull читает ровно len(buf) байт.
+func readFull(conn net.Conn, buf []byte) (int, error) {
+	total := 0
+	for total < len(buf) {
+		n, err := conn.Read(buf[total:])
+		total += n
+		if err != nil {
+			return total, err
+		}
+	}
+	return total, nil
 }
 
 // --- СЕТЕВАЯ ЛОГИКА ---
@@ -179,7 +223,7 @@ func sendLoginPacket(login, pass string) {
 }
 
 func sendMessage(text string) {
-	aead, err := chacha20poly1305.New([]byte(cfg.SharedKey))
+	aead, err := chacha20poly1305.New(sharedKey)
 	if err != nil {
 		fmt.Println("❌ Ошибка ключа:", err)
 		return
@@ -188,21 +232,16 @@ func sendMessage(text string) {
 	rand.Read(nonce)
 	ciphertext := aead.Seal(nil, nonce, []byte(text), nil)
 
-	// [CMD(1)][SID(2)][Nonce(12)][Ciphertext]
 	packet := []byte{CmdMsg, byte(sessionID >> 8), byte(sessionID & 0xFF)}
 	packet = append(packet, nonce...)
 	packet = append(packet, ciphertext...)
 
-	_, err = conn.Write(packet)
-	if err != nil {
+	if _, err = conn.Write(packet); err != nil {
 		fmt.Println("❌ Связь разорвана:", err)
 		os.Exit(1)
 	}
 }
 
-// readLoop читает все входящие пакеты.
-// loginDone получает true/false по результату логина (nil = уже авторизованы).
-// historyDone закрывается когда получен CmdHistoryEnd.
 func readLoop(loginDone chan bool, historyDone chan struct{}) {
 	buf := make([]byte, 4096)
 	historyFinished := false
@@ -218,14 +257,12 @@ func readLoop(loginDone chan bool, historyDone chan struct{}) {
 			continue
 		}
 
-		// Обрабатываем все пакеты в буфере (могут прийти склеенными)
 		data := buf[:n]
 		for len(data) > 0 {
 			cmd := data[0]
 			switch cmd {
 
 			case CmdLoginOK:
-				// [CmdLoginOK(1)][SID_hi(1)][SID_lo(1)]
 				if len(data) < 3 {
 					data = nil
 					continue
@@ -245,11 +282,9 @@ func readLoop(loginDone chan bool, historyDone chan struct{}) {
 				data = data[1:]
 
 			case 0x06:
-				// ACK
 				data = data[1:]
 
 			case CmdHistory:
-				// [CmdHistory(1)][SenderLen(1)][Sender][TimeLen(1)][Time][MsgLen(2)][Text]
 				if len(data) < 5 {
 					data = nil
 					continue
@@ -287,7 +322,6 @@ func readLoop(loginDone chan bool, historyDone chan struct{}) {
 				data = data[1:]
 
 			case CmdIncoming:
-				// [CmdIncoming(1)][SenderLen(1)][Sender][Nonce(12)][Ciphertext]
 				if len(data) < 16 {
 					data = nil
 					continue
@@ -300,14 +334,12 @@ func readLoop(loginDone chan bool, historyDone chan struct{}) {
 				sender := string(data[2 : 2+senderLen])
 				nonce := data[2+senderLen : 2+senderLen+12]
 				ciphertext := data[2+senderLen+12:]
-				plaintext, err := decryptMsg(ciphertext, nonce)
-				if err == nil {
+				if plaintext, err := decryptMsg(ciphertext, nonce); err == nil {
 					fmt.Printf("\n📨 [%s]: %s\n>> ", sender, string(plaintext))
 				}
-				data = nil // ciphertext идёт до конца буфера
+				data = nil
 
 			default:
-				// Неизвестный байт — пропускаем
 				data = data[1:]
 			}
 		}
@@ -315,7 +347,7 @@ func readLoop(loginDone chan bool, historyDone chan struct{}) {
 }
 
 func decryptMsg(ciphertext, nonce []byte) ([]byte, error) {
-	aead, err := chacha20poly1305.New([]byte(cfg.SharedKey))
+	aead, err := chacha20poly1305.New(sharedKey)
 	if err != nil {
 		return nil, err
 	}
@@ -327,7 +359,6 @@ func loadConfig(path string) {
 		ProxyAddr:  "127.0.0.1:8080",
 		ServerAddr: "127.0.0.1:9999",
 		DirectMode: false,
-		SharedKey:  "12345678901234567890123456789012",
 	}
 	file, err := os.Open(path)
 	if err == nil {
