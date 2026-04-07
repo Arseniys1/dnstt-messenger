@@ -4,21 +4,23 @@ import (
 	"crypto/ecdh"
 	"crypto/rand"
 	"database/sql"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"net"
 	"os"
 	"sync"
+	"sync/atomic"
 
 	"golang.org/x/crypto/chacha20poly1305"
 	_ "modernc.org/sqlite"
 )
 
 type Config struct {
-	ListenAddr   string `json:"listen_addr"`
-	DBPath       string `json:"db_path"`
-	MinPacketSize int   `json:"min_packet_size"`
-	HistoryLimit  int   `json:"history_limit"`
+	ListenAddr    string `json:"listen_addr"`
+	DBPath        string `json:"db_path"`
+	MinPacketSize int    `json:"min_packet_size"`
+	HistoryLimit  int    `json:"history_limit"`
 }
 
 const (
@@ -37,7 +39,8 @@ var (
 	db         *sql.DB
 	sessions   = make(map[uint16]string)
 	conns      = make(map[uint16]net.Conn)
-	keys       = make(map[uint16][]byte) // SID -> sharedKey
+	keys       = make(map[uint16][]byte)
+	nonces     = make(map[uint16]*atomic.Uint64) // SID -> исходящий счётчик nonce
 	sessMu     sync.RWMutex
 	sidCounter uint16
 )
@@ -63,39 +66,24 @@ func main() {
 	}
 }
 
-// ecdhHandshake выполняет X25519 хендшейк и возвращает общий 32-байтный ключ.
-// Сервер первым отправляет свой публичный ключ, затем читает клиентский.
 func ecdhHandshake(conn net.Conn) ([]byte, error) {
 	curve := ecdh.X25519()
-
 	privKey, err := curve.GenerateKey(rand.Reader)
 	if err != nil {
-		return nil, fmt.Errorf("генерация ключа: %w", err)
+		return nil, err
 	}
-
-	// Отправляем публичный ключ сервера (32 байта)
-	_, err = conn.Write(privKey.PublicKey().Bytes())
-	if err != nil {
-		return nil, fmt.Errorf("отправка публичного ключа: %w", err)
+	if _, err = conn.Write(privKey.PublicKey().Bytes()); err != nil {
+		return nil, err
 	}
-
-	// Читаем публичный ключ клиента (32 байта)
 	clientPubBytes := make([]byte, 32)
 	if _, err = readFull(conn, clientPubBytes); err != nil {
-		return nil, fmt.Errorf("чтение публичного ключа клиента: %w", err)
+		return nil, err
 	}
-
 	clientPub, err := curve.NewPublicKey(clientPubBytes)
 	if err != nil {
-		return nil, fmt.Errorf("парсинг публичного ключа клиента: %w", err)
+		return nil, err
 	}
-
-	shared, err := privKey.ECDH(clientPub)
-	if err != nil {
-		return nil, fmt.Errorf("вычисление общего секрета: %w", err)
-	}
-
-	return shared, nil
+	return privKey.ECDH(clientPub)
 }
 
 func handleConnection(conn net.Conn) {
@@ -103,12 +91,14 @@ func handleConnection(conn net.Conn) {
 
 	sharedKey, err := ecdhHandshake(conn)
 	if err != nil {
-		fmt.Printf("❌ ECDH хендшейк не удался (%s): %v\n", conn.RemoteAddr(), err)
+		fmt.Printf("❌ ECDH failed (%s): %v\n", conn.RemoteAddr(), err)
 		return
 	}
-	fmt.Printf("🔐 ECDH хендшейк выполнен (%s)\n", conn.RemoteAddr())
+	fmt.Printf("🔐 ECDH ok (%s)\n", conn.RemoteAddr())
 
 	var mySID uint16
+	var recvCounter uint64 // входящий счётчик для replay-защиты
+
 	defer func() {
 		if mySID != 0 {
 			sessMu.Lock()
@@ -116,6 +106,7 @@ func handleConnection(conn net.Conn) {
 			delete(sessions, mySID)
 			delete(conns, mySID)
 			delete(keys, mySID)
+			delete(nonces, mySID)
 			sessMu.Unlock()
 			fmt.Printf("👋 Отключился: %s (SID: %d)\n", login, mySID)
 		}
@@ -140,7 +131,8 @@ func handleConnection(conn net.Conn) {
 		case CmdLogin:
 			mySID = handleLogin(conn, payload, sharedKey)
 		case CmdMsg:
-			handleMessage(conn, mySID, payload, sharedKey)
+			// payload: [nonce(8)][ciphertext]
+			handleMessage(mySID, payload, sharedKey, &recvCounter)
 		}
 	}
 }
@@ -182,32 +174,43 @@ func handleLogin(conn net.Conn, data []byte, sharedKey []byte) uint16 {
 
 	var storedPass string
 	err := db.QueryRow("SELECT password FROM users WHERE login = ?", login).Scan(&storedPass)
-
-	if err == nil && storedPass == pass {
-		sessMu.Lock()
-		sidCounter++
-		sid := sidCounter
-		sessions[sid] = login
-		conns[sid] = conn
-		keys[sid] = sharedKey
-		sessMu.Unlock()
-
-		conn.Write([]byte{CmdLoginOK, byte(sid >> 8), byte(sid & 0xFF)})
-		sendHistory(conn)
-		fmt.Printf("🔑 Вошел: %s (SID: %d)\n", login, sid)
-		return sid
+	if err != nil || storedPass != pass {
+		conn.Write([]byte{CmdLoginFail})
+		return 0
 	}
-	conn.Write([]byte{CmdLoginFail})
-	return 0
+
+	sessMu.Lock()
+	sidCounter++
+	sid := sidCounter
+	sessions[sid] = login
+	conns[sid] = conn
+	keys[sid] = sharedKey
+	nc := &atomic.Uint64{}
+	nonces[sid] = nc
+	sessMu.Unlock()
+
+	conn.Write([]byte{CmdLoginOK, byte(sid >> 8), byte(sid & 0xFF)})
+	sendHistory(conn, sharedKey, nc)
+	fmt.Printf("🔑 Вошел: %s (SID: %d)\n", login, sid)
+	return sid
 }
 
-func handleMessage(conn net.Conn, senderSID uint16, data []byte, sharedKey []byte) {
-	// [SID(2)][Nonce(12)][EncData]
-	if senderSID == 0 || len(data) < 14 {
+func handleMessage(senderSID uint16, data []byte, sharedKey []byte, recvCounter *uint64) {
+	// [nonce(8)][ciphertext]
+	if senderSID == 0 || len(data) < 9 {
 		return
 	}
-	nonce := data[2:14]
-	ciphertext := data[14:]
+
+	cnt := binary.LittleEndian.Uint64(data[:8])
+	// replay-защита: счётчик должен строго возрастать
+	if cnt <= *recvCounter {
+		return
+	}
+	*recvCounter = cnt
+
+	nonce := make([]byte, 12)
+	copy(nonce[:8], data[:8])
+	ciphertext := data[8:]
 
 	sessMu.RLock()
 	user, ok := sessions[senderSID]
@@ -223,7 +226,6 @@ func handleMessage(conn net.Conn, senderSID uint16, data []byte, sharedKey []byt
 
 	saveMessage(user, string(decrypted))
 	fmt.Printf("📩 [%s]: %s\n", user, string(decrypted))
-	conn.Write([]byte{0x06})
 
 	broadcastEncrypted(senderSID, user, decrypted)
 }
@@ -239,32 +241,37 @@ func broadcastEncrypted(senderSID uint16, senderName string, plaintext []byte) {
 			continue
 		}
 		key := keys[sid]
+		nc := nonces[sid]
+
 		aead, err := chacha20poly1305.New(key)
 		if err != nil {
 			continue
 		}
-		nonce := make([]byte, aead.NonceSize())
-		if _, err = rand.Read(nonce); err != nil {
-			continue
-		}
+
+		cntVal := nc.Add(1)
+		nonce := make([]byte, 12)
+		binary.LittleEndian.PutUint64(nonce[:8], cntVal)
+
 		ct := aead.Seal(nil, nonce, plaintext, nil)
 
+		// [CmdIncoming(1)][senderLen(1)][sender][nonce(8)][ciphertext]
 		packet := []byte{CmdIncoming, byte(len(senderBytes))}
 		packet = append(packet, senderBytes...)
-		packet = append(packet, nonce...)
+		packet = append(packet, nonce[:8]...)
 		packet = append(packet, ct...)
 		c.Write(packet)
 	}
 }
 
-func sendHistory(conn net.Conn) {
+// sendHistory: [CmdHistory(1)][senderLen(1)][sender][ts uint32 BE(4)][nonce(8)][ciphertext]
+func sendHistory(conn net.Conn, key []byte, nc *atomic.Uint64) {
 	limit := cfg.HistoryLimit
 	if limit <= 0 {
 		limit = 50
 	}
 
 	rows, err := db.Query(
-		`SELECT sender, content, created_at FROM messages ORDER BY id DESC LIMIT ?`, limit,
+		`SELECT sender, content, strftime('%s', created_at) FROM messages ORDER BY id DESC LIMIT ?`, limit,
 	)
 	if err != nil {
 		conn.Write([]byte{CmdHistoryEnd})
@@ -272,11 +279,18 @@ func sendHistory(conn net.Conn) {
 	}
 	defer rows.Close()
 
-	type msgRow struct{ sender, content, createdAt string }
+	type msgRow struct {
+		sender, content string
+		ts              uint32
+	}
 	var msgs []msgRow
 	for rows.Next() {
 		var m msgRow
-		rows.Scan(&m.sender, &m.content, &m.createdAt)
+		var tsStr string
+		rows.Scan(&m.sender, &m.content, &tsStr)
+		var tsVal uint64
+		fmt.Sscanf(tsStr, "%d", &tsVal)
+		m.ts = uint32(tsVal)
 		msgs = append(msgs, m)
 	}
 
@@ -284,22 +298,30 @@ func sendHistory(conn net.Conn) {
 		msgs[i], msgs[j] = msgs[j], msgs[i]
 	}
 
-	for _, m := range msgs {
-		timeStr := m.createdAt
-		if len(timeStr) > 16 {
-			timeStr = timeStr[:16]
-		}
-		senderBytes := []byte(m.sender)
-		timeBytes := []byte(timeStr)
-		contentBytes := []byte(m.content)
-		msgLen := len(contentBytes)
+	aead, err := chacha20poly1305.New(key)
+	if err != nil {
+		conn.Write([]byte{CmdHistoryEnd})
+		return
+	}
 
+	for _, m := range msgs {
+		senderBytes := []byte(m.sender)
+		contentBytes := []byte(m.content)
+		if len(contentBytes) > 255 {
+			contentBytes = contentBytes[:255]
+		}
+
+		cntVal := nc.Add(1)
+		nonce := make([]byte, 12)
+		binary.LittleEndian.PutUint64(nonce[:8], cntVal)
+		ct := aead.Seal(nil, nonce, contentBytes, nil)
+
+		// [CmdHistory(1)][senderLen(1)][sender][ts uint32 BE(4)][nonce(8)][ciphertext]
 		packet := []byte{CmdHistory, byte(len(senderBytes))}
 		packet = append(packet, senderBytes...)
-		packet = append(packet, byte(len(timeBytes)))
-		packet = append(packet, timeBytes...)
-		packet = append(packet, byte(msgLen>>8), byte(msgLen))
-		packet = append(packet, contentBytes...)
+		packet = binary.BigEndian.AppendUint32(packet, m.ts)
+		packet = append(packet, nonce[:8]...)
+		packet = append(packet, ct...)
 		conn.Write(packet)
 	}
 
@@ -318,7 +340,6 @@ func decryptWith(key, data, nonce []byte) ([]byte, error) {
 	return aead.Open(nil, nonce, data, nil)
 }
 
-// readFull читает ровно len(buf) байт из conn.
 func readFull(conn net.Conn, buf []byte) (int, error) {
 	total := 0
 	for total < len(buf) {
