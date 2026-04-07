@@ -60,8 +60,8 @@ ipcMain.handle('connect', async (_, cfg) => {
   if (client) { client.destroy(); client = null; }
   client = new MessengerClient(cfg);
 
-  client.on('message', (sender, text, time, msgId) => {
-    win.webContents.send('message', { sender, text, time, msgId });
+  client.on('message', (sender, text, time) => {
+    win.webContents.send('message', { sender, text, time });
   });
   client.on('online-list', (users) => {
     win.webContents.send('online-list', users);
@@ -71,12 +71,6 @@ ipcMain.handle('connect', async (_, cfg) => {
   });
   client.on('history-end', () => {
     win.webContents.send('history-end');
-  });
-  client.on('ack', (msgId) => {
-    win.webContents.send('ack', msgId);
-  });
-  client.on('delivered', (msgId) => {
-    win.webContents.send('delivered', msgId);
   });
   client.on('disconnected', () => {
     win.webContents.send('disconnected');
@@ -97,7 +91,7 @@ ipcMain.handle('login', async (_, login, pass) => {
 });
 
 ipcMain.handle('send-message', async (_, text) => {
-  if (!client) return null;
+  if (!client) return false;
   return client.sendMessage(text);
 });
 

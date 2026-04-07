@@ -94,7 +94,7 @@ async function doLogin() {
 
 // --- IPC listeners ---
 function registerListeners() {
-  ['message','online-list','history','history-end','disconnected','ack','delivered'].forEach(ch =>
+  ['message','online-list','history','history-end','disconnected'].forEach(ch =>
     window.api.removeAllListeners(ch)
   );
 
@@ -107,23 +107,10 @@ function registerListeners() {
     scrollBottom();
   });
 
-  window.api.onMessage(({ sender, text, time, msgId }) => {
-    if (sender === myUsername) return;
-    appendMessage(sender, text, time, false, msgId);
+  window.api.onMessage(({ sender, text, time }) => {
+    if (sender === myUsername) return; // уже показали при отправке
+    appendMessage(sender, text, time, false);
     scrollBottom();
-  });
-
-  window.api.onAck((msgId) => {
-    const el = pendingAckQueue.shift();
-    if (el) el.dataset.msgId = msgId;
-  });
-
-  window.api.onDelivered((msgId) => {
-    const el = messages.querySelector(`.msg.own[data-msg-id="${msgId}"]`);
-    if (el) {
-      const ticks = el.querySelector('.ticks');
-      if (ticks) { ticks.textContent = '✓✓'; ticks.classList.add('read'); }
-    }
   });
 
   window.api.onOnlineList(users => {
@@ -157,20 +144,11 @@ function showConnect() {
   screenConnect.classList.add('active');
 }
 
-// Очередь собственных сообщений ожидающих ACK (FIFO)
-const pendingAckQueue = [];
-
-function appendMessage(sender, text, time, own, msgId = null) {
+function appendMessage(sender, text, time, own) {
   const div = document.createElement('div');
   div.className = 'msg ' + (own ? 'own' : 'other');
-  if (msgId) div.dataset.msgId = msgId;
-
-  const ticks = own ? '<span class="ticks">✓</span>' : '';
-  div.innerHTML = `<div class="meta">${escHtml(own ? 'Вы' : sender)} · ${escHtml(time)}${ticks}</div>${escHtml(text)}`;
+  div.innerHTML = `<div class="meta">${escHtml(own ? 'Вы' : sender)} · ${escHtml(time)}</div>${escHtml(text)}`;
   messages.appendChild(div);
-
-  if (own && !msgId) pendingAckQueue.push(div);
-  return div;
 }
 
 function appendDivider(text) {
@@ -209,14 +187,10 @@ msgInput.addEventListener('keydown', e => {
 function sendMsg() {
   const text = msgInput.value.trim();
   if (!text || !connected) return;
+  window.api.sendMessage(text);
   const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  // Добавляем сообщение синхронно, до IPC вызова
-  const el = appendMessage(myUsername, text, now, true);
+  appendMessage(myUsername, text, now, true);
   scrollBottom();
-  // IPC вызов — когда придёт ACK с msgId, привяжем его к этому элементу
-  window.api.sendMessage(text).then(localId => {
-    if (localId && el) el.dataset.localId = localId;
-  });
   msgInput.value = '';
   msgInput.style.height = 'auto';
 }
@@ -230,7 +204,6 @@ msgInput.addEventListener('input', () => {
 // --- Logout ---
 document.getElementById('btn-logout').addEventListener('click', async () => {
   connected = false;
-  pendingAckQueue.length = 0;
   await window.api.disconnect();
   showConnect();
   setStatus('');

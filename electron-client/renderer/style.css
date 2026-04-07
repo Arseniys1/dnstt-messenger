@@ -246,14 +246,6 @@ label { font-size: 0.8rem; color: var(--muted); }
 }
 .msg.own .meta { text-align: right; }
 
-.ticks {
-  margin-left: 5px;
-  font-size: 0.75rem;
-  color: var(--muted);
-  letter-spacing: -2px;
-}
-.ticks.read { color: #60a5fa; }
-
 .divider {
   text-align: center;
   font-size: 0.75rem;
