@@ -295,22 +295,23 @@ class MessengerClient extends EventEmitter {
 
       if (cmd === CMD.INCOMING) {
         // Формат: [0x04][senderLen(1)][sender][nonce(12)][ctLen(2)][ciphertext]
-        // Сервер не шлёт ctLen — читаем весь остаток как ciphertext одного пакета.
-        // Это безопасно т.к. сервер делает один Write на одно сообщение.
         if (this._buf.length < 4) return;
         const senderLen = this._buf[1];
-        const minLen = 2 + senderLen + 12 + 17;
+        const minLen = 2 + senderLen + 12 + 2 + 1;
         if (this._buf.length < minLen) return;
         const sender = this._buf.slice(2, 2 + senderLen).toString();
         const nonce  = this._buf.slice(2 + senderLen, 2 + senderLen + 12);
-        const ct     = this._buf.slice(2 + senderLen + 12);
+        const ctLen  = (this._buf[2 + senderLen + 12] << 8) | this._buf[2 + senderLen + 13];
+        const off    = 2 + senderLen + 12 + 2;
+        if (this._buf.length < off + ctLen) return;
+        const ct = this._buf.slice(off, off + ctLen);
         try {
           const plain = this._decrypt(ct, nonce);
           const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
           this.emit('message', sender, plain.toString(), now);
         } catch (_) {}
-        this._buf = Buffer.alloc(0);
-        return;
+        this._buf = this._buf.slice(off + ctLen);
+        continue;
       }
 
       if (cmd === CMD.ONLINE_LIST) {

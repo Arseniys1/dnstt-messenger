@@ -9,9 +9,10 @@ import android.os.Build
 import android.os.IBinder
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 
 enum class Screen { LOGIN, CHAT }
@@ -40,10 +41,8 @@ class MessengerViewModel(app: Application) : AndroidViewModel(app) {
         override fun onServiceConnected(name: ComponentName, binder: IBinder) {
             service = (binder as MessengerService.LocalBinder).getService()
             bound = true
-            // Subscribe to events from service
             viewModelScope.launch {
                 service!!.events.collect { event ->
-                    event ?: return@collect
                     handleEvent(event)
                 }
             }
@@ -55,20 +54,17 @@ class MessengerViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     init {
-        bindService()
+        startAndBindService()
     }
 
-    private fun bindService() {
+    private fun startAndBindService() {
         val ctx = getApplication<Application>()
         val intent = Intent(ctx, MessengerService::class.java)
-        // Start as foreground service so it survives when UI is gone
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             ctx.startForegroundService(intent)
         } else {
             ctx.startService(intent)
         }
-        // Bind WITHOUT BIND_AUTO_CREATE — service must already be started above
-        // This way unbinding does NOT stop the service
         ctx.bindService(intent, connection, 0)
     }
 
@@ -101,20 +97,19 @@ class MessengerViewModel(app: Application) : AndroidViewModel(app) {
         }
         viewModelScope.launch {
             setStatus("Подключение...", loading = true)
-            // For register we use a temporary client (no service needed)
             val c = MessengerClient()
-            val connResult = c.connect(_state.value.config)
-            if (connResult.isFailure) {
+            val connResult = withTimeoutOrNull(12_000) { c.connect(_state.value.config) }
+            if (connResult == null || connResult.isFailure) {
                 c.destroy()
-                setStatus("Ошибка подключения: ${connResult.exceptionOrNull()?.message}", error = true)
+                setStatus("Ошибка подключения: ${connResult?.exceptionOrNull()?.message ?: "таймаут"}", error = true)
                 return@launch
             }
-            val regResult = c.register(login, pass)
+            val regResult = withTimeoutOrNull(6_000) { c.register(login, pass) }
             c.destroy()
-            if (regResult.isSuccess && regResult.getOrNull() == true) {
-                setStatus("Аккаунт создан! Теперь войдите.")
-            } else {
-                setStatus("Логин уже занят", error = true)
+            when {
+                regResult == null -> setStatus("Таймаут регистрации", error = true)
+                regResult.getOrNull() == true -> setStatus("Аккаунт создан! Теперь войдите.")
+                else -> setStatus("Логин уже занят", error = true)
             }
         }
     }
@@ -125,21 +120,27 @@ class MessengerViewModel(app: Application) : AndroidViewModel(app) {
             setStatus("Заполните все поля", error = true); return
         }
         viewModelScope.launch {
-            val svc = service ?: run {
+            // Wait up to 3s for service to bind
+            val svc = waitForService() ?: run {
                 setStatus("Сервис не готов, попробуйте снова", error = true); return@launch
             }
+
             setStatus("Подключение...", loading = true)
-            val connResult = svc.connect(_state.value.config)
-            if (connResult.isFailure) {
-                setStatus("Ошибка подключения: ${connResult.exceptionOrNull()?.message}", error = true)
+            val connResult = withTimeoutOrNull(12_000) { svc.connect(_state.value.config) }
+            if (connResult == null || connResult.isFailure) {
+                setStatus("Ошибка подключения: ${connResult?.exceptionOrNull()?.message ?: "таймаут"}", error = true)
                 return@launch
             }
+
             setStatus("Авторизация...", loading = true)
+            // login() has its own 8s timeout internally
             val loginResult = svc.login(login, pass)
             if (loginResult.isFailure) {
                 setStatus("Неверный логин или пароль", error = true)
                 return@launch
             }
+
+            svc.setUsername(login)
             _state.value = _state.value.copy(
                 screen = Screen.CHAT,
                 myUsername = login,
@@ -149,8 +150,17 @@ class MessengerViewModel(app: Application) : AndroidViewModel(app) {
                 isLoading = false,
                 isError = false
             )
-            svc.startReadLoop(login)
         }
+    }
+
+    // Wait up to 3 seconds for service to bind
+    private suspend fun waitForService(): MessengerService? {
+        if (service != null) return service
+        repeat(30) {
+            kotlinx.coroutines.delay(100)
+            if (service != null) return service
+        }
+        return null
     }
 
     // ---- Send message ----
@@ -161,8 +171,11 @@ class MessengerViewModel(app: Application) : AndroidViewModel(app) {
             service?.sendMessage(trimmed)
             val now = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault())
                 .format(java.util.Date())
-            val msg = ChatMessage(sender = _state.value.myUsername, text = trimmed, time = now, own = true)
-            _state.value = _state.value.copy(messages = _state.value.messages + msg)
+            _state.value = _state.value.copy(
+                messages = _state.value.messages + ChatMessage(
+                    sender = _state.value.myUsername, text = trimmed, time = now, own = true
+                )
+            )
         }
     }
 
@@ -174,20 +187,22 @@ class MessengerViewModel(app: Application) : AndroidViewModel(app) {
             messages = emptyList(),
             onlineUsers = emptyList(),
             myUsername = "",
-            status = ""
+            status = "",
+            isLoading = false
         )
-        // Rebind fresh service for next login
-        bindService()
+        startAndBindService()
     }
 
-    // ---- Handle events from service ----
+    // ---- Handle events ----
     private fun handleEvent(event: ServerEvent) {
         when (event) {
             is ServerEvent.History -> {
                 val msg = event.msg.copy(own = event.msg.sender == _state.value.myUsername)
                 _state.value = _state.value.copy(messages = _state.value.messages + msg)
             }
-            is ServerEvent.HistoryEnd -> { /* no-op */ }
+            is ServerEvent.HistoryEnd -> {}
+            is ServerEvent.LoginOk -> {}
+            is ServerEvent.LoginFail -> {}
             is ServerEvent.Message -> {
                 val msg = event.msg.copy(own = event.msg.sender == _state.value.myUsername)
                 _state.value = _state.value.copy(messages = _state.value.messages + msg)
@@ -196,14 +211,17 @@ class MessengerViewModel(app: Application) : AndroidViewModel(app) {
                 _state.value = _state.value.copy(onlineUsers = event.users)
             }
             is ServerEvent.Disconnected -> {
-                _state.value = _state.value.copy(
-                    screen = Screen.LOGIN,
-                    status = "Соединение разорвано",
-                    isError = true,
-                    messages = emptyList(),
-                    onlineUsers = emptyList()
-                )
-                bindService()
+                if (_state.value.screen == Screen.CHAT) {
+                    _state.value = _state.value.copy(
+                        screen = Screen.LOGIN,
+                        status = "Соединение разорвано",
+                        isError = true,
+                        isLoading = false,
+                        messages = emptyList(),
+                        onlineUsers = emptyList()
+                    )
+                }
+                startAndBindService()
             }
         }
     }

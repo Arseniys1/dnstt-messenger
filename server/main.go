@@ -256,6 +256,7 @@ func broadcastEncrypted(senderSID uint16, senderName string, plaintext []byte) {
 		packet := []byte{CmdIncoming, byte(len(senderBytes))}
 		packet = append(packet, senderBytes...)
 		packet = append(packet, nonce...)
+		packet = append(packet, byte(len(ct)>>8), byte(len(ct)))
 		packet = append(packet, ct...)
 		c.Write(packet)
 	}

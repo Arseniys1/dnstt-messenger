@@ -323,22 +323,28 @@ func readLoop(loginDone chan bool, historyDone chan struct{}) {
 				data = data[1:]
 
 			case CmdIncoming:
-				if len(data) < 16 {
+				if len(data) < 4 {
 					data = nil
 					continue
 				}
 				senderLen := int(data[1])
-				if len(data) < 2+senderLen+12+1 {
+				if len(data) < 2+senderLen+12+2 {
 					data = nil
 					continue
 				}
 				sender := string(data[2 : 2+senderLen])
 				nonce := data[2+senderLen : 2+senderLen+12]
-				ciphertext := data[2+senderLen+12:]
+				ctLen := int(data[2+senderLen+12])<<8 | int(data[2+senderLen+13])
+				off := 2 + senderLen + 12 + 2
+				if len(data) < off+ctLen {
+					data = nil
+					continue
+				}
+				ciphertext := data[off : off+ctLen]
 				if plaintext, err := decryptMsg(ciphertext, nonce); err == nil {
 					fmt.Printf("\n📨 [%s]: %s\n>> ", sender, string(plaintext))
 				}
-				data = nil
+				data = data[off+ctLen:]
 
 			case CmdOnlineList:
 				if len(data) < 2 {
