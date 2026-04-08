@@ -33,6 +33,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import androidx.core.view.WindowCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.myapplication.ui.theme.MyApplicationTheme
@@ -46,12 +47,23 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         Notifications.createChannel(this)
         requestNotificationPermission()
+        WindowCompat.setDecorFitsSystemWindows(window, false)
         enableEdgeToEdge()
         setContent {
             MyApplicationTheme {
                 MessengerApp()
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        AppForegroundState.isInForeground = true
+    }
+
+    override fun onPause() {
+        super.onPause()
+        AppForegroundState.isInForeground = false
     }
 
     private fun requestNotificationPermission() {
@@ -245,30 +257,37 @@ fun ChatScreen(state: UiState, vm: MessengerViewModel) {
             )
         },
         bottomBar = {
-            Row(
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(8.dp),
-                verticalAlignment = Alignment.Bottom
+                    .imePadding()
+                    .navigationBarsPadding()
             ) {
-                OutlinedTextField(
-                    value = msgText,
-                    onValueChange = { msgText = it },
-                    placeholder = { Text("Сообщение...") },
-                    modifier = Modifier.weight(1f),
-                    maxLines = 4,
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                    keyboardActions = KeyboardActions(onSend = {
-                        vm.sendMessage(msgText); msgText = ""
-                    })
-                )
-                Spacer(Modifier.width(8.dp))
-                IconButton(
-                    onClick = { vm.sendMessage(msgText); msgText = "" },
-                    enabled = msgText.isNotBlank()
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.Bottom
                 ) {
-                    Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Отправить",
-                        tint = MaterialTheme.colorScheme.primary)
+                    OutlinedTextField(
+                        value = msgText,
+                        onValueChange = { msgText = it },
+                        placeholder = { Text("Сообщение...") },
+                        modifier = Modifier.weight(1f),
+                        maxLines = 4,
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                        keyboardActions = KeyboardActions(onSend = {
+                            vm.sendMessage(msgText); msgText = ""
+                        })
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    IconButton(
+                        onClick = { vm.sendMessage(msgText); msgText = "" },
+                        enabled = msgText.isNotBlank()
+                    ) {
+                        Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Отправить",
+                            tint = MaterialTheme.colorScheme.primary)
+                    }
                 }
             }
         }

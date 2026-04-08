@@ -74,7 +74,7 @@ class MessengerService : Service() {
         relayJob = scope.launch {
             client.events.collect { event ->
                 _events.emit(event)
-                if (event is ServerEvent.Message && event.msg.sender != myUsername) {
+                if (event is ServerEvent.Message && event.msg.sender != myUsername && !AppForegroundState.isInForeground) {
                     Notifications.show(applicationContext, event.msg.sender, event.msg.text)
                 }
                 if (event is ServerEvent.Disconnected) cancel()
