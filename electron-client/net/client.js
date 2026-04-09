@@ -229,6 +229,7 @@ class MessengerClient extends EventEmitter {
       chunks.push(msgPayload.slice(offset, offset + maxChunk));
       offset += maxChunk;
     }
+    if (chunks.length > 255) return false; // fragCount must fit in one byte
     const fragCount = chunks.length;
     chunks.forEach((chunk, idx) => {
       const fp = Buffer.alloc(3 + chunk.length);
@@ -317,7 +318,8 @@ class MessengerClient extends EventEmitter {
 
       case CMD.HISTORY: {
         // Payload: [SenderLen(1)][Sender(N)][Timestamp(4 BE)][Content...]
-        if (payload.length < 6) break;
+        // Minimum: 1 (SenderLen) + 4 (Timestamp) = 5 bytes.
+        if (payload.length < 5) break;
         const senderLen = payload[0];
         if (payload.length < 1 + senderLen + 4) break;
         const sender = payload.slice(1, 1 + senderLen).toString();

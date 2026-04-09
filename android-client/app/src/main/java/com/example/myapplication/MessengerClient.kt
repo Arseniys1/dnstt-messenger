@@ -220,6 +220,7 @@ class MessengerClient {
                 val msgId    = (fragCounter.incrementAndGet() and 0xFF).toByte()
                 val maxChunk = MAX_FRAME_SIZE - 6 // 2 (len) + 1 (cmd) + 3 (msgID, fragIdx, fragCount)
                 val chunks   = msgPayload.toList().chunked(maxChunk.coerceAtLeast(1))
+                if (chunks.size > 255) return@withContext Result.failure(Exception("Message too large to fragment"))
                 val fragCount = chunks.size.toByte()
                 chunks.forEachIndexed { idx, chunk ->
                     val fp = byteArrayOf(msgId, idx.toByte(), fragCount) + chunk.toByteArray()
@@ -277,7 +278,8 @@ class MessengerClient {
 
     private fun parseHistory(payload: ByteArray): ServerEvent? {
         // Payload: [SenderLen(1)][Sender(N)][Timestamp(4 BE)][Content...]
-        if (payload.size < 6) return null
+        // Minimum: 1 (SenderLen) + 4 (Timestamp) = 5 bytes.
+        if (payload.size < 5) return null
         val senderLen = payload[0].toInt() and 0xFF
         if (payload.size < 1 + senderLen + 4) return null
         val sender  = String(payload, 1, senderLen)

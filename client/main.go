@@ -359,7 +359,8 @@ func readLoop(loginDone chan bool, historyDone chan struct{}) {
 			case CmdHistory:
 				// Payload: [SenderLen(1)][Sender(N)][Timestamp(4 BE)][Content...]
 				// Content length is implicit (payload length minus fixed prefix).
-				if len(payload) < 6 {
+				// Minimum: 1 (SenderLen) + 4 (Timestamp) = 5 bytes.
+				if len(payload) < 5 {
 					continue
 				}
 				senderLen := int(payload[0])

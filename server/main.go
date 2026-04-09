@@ -161,6 +161,7 @@ func handleConnection(conn net.Conn) {
 	}()
 
 	// Accumulating buffer: parse complete frames even when TCP delivers partial data.
+	const maxPending = 65536 // 64 KB cap; disconnect client if exceeded
 	var pending []byte
 	tmp := make([]byte, 4096)
 
@@ -170,6 +171,10 @@ func handleConnection(conn net.Conn) {
 			return
 		}
 		pending = append(pending, tmp[:n]...)
+		if len(pending) > maxPending {
+			fmt.Printf("⚠️ Превышен буфер (%d байт) от %s — разрываем соединение\n", len(pending), conn.RemoteAddr())
+			return
+		}
 
 		for {
 			if len(pending) < 2 {
@@ -243,7 +248,24 @@ func handleLogin(conn net.Conn, data []byte, sharedKey []byte) uint16 {
 	if err == nil && storedPass == pass {
 		sessMu.Lock()
 		sidCounter++
+		if sidCounter == 0 {
+			sidCounter = 1 // skip 0 (reserved as "no session")
+		}
 		sid := sidCounter
+		// Resolve collision: if all 65535 slots are taken this will loop, but
+		// that is an extreme edge case we handle gracefully by failing login.
+		for clients[sid] != nil {
+			sidCounter++
+			if sidCounter == 0 {
+				sidCounter = 1
+			}
+			sid = sidCounter
+			if sid == sidCounter-1 { // full wrap with no free slot
+				sessMu.Unlock()
+				writeFrame(conn, CmdLoginFail, nil)
+				return 0
+			}
+		}
 		clients[sid] = &clientState{
 			conn:  conn,
 			key:   sharedKey,
@@ -270,7 +292,8 @@ func handleLogin(conn net.Conn, data []byte, sharedKey []byte) uint16 {
 
 func handleMessage(senderSID uint16, data []byte, sharedKey []byte, recvCounter *uint64) {
 	// Payload: [Counter(8 LE)][Ciphertext(N+16)]
-	if senderSID == 0 || len(data) < 9 {
+	// Minimum: 8 bytes counter + 16 bytes auth tag = 24 bytes
+	if senderSID == 0 || len(data) < 24 {
 		return
 	}
 
@@ -347,21 +370,32 @@ func handleFragment(senderSID uint16, data []byte) []byte {
 }
 
 func broadcastEncrypted(senderSID uint16, plaintext []byte) {
-	sessMu.RLock()
-	defer sessMu.RUnlock()
+	// Collect targets inside the lock (increment nonce atomically), then write
+	// outside the lock so a slow/blocked socket can't stall new logins.
+	type target struct {
+		conn  net.Conn
+		key   []byte
+		cnt   uint64
+	}
 
+	sessMu.RLock()
+	targets := make([]target, 0, len(clients))
 	for sid, cs := range clients {
 		if sid == senderSID {
 			continue
 		}
-		aead, err := chacha20poly1305.New(cs.key)
+		targets = append(targets, target{conn: cs.conn, key: cs.key, cnt: cs.sendNonce.Add(1)})
+	}
+	sessMu.RUnlock()
+
+	for _, t := range targets {
+		aead, err := chacha20poly1305.New(t.key)
 		if err != nil {
 			continue
 		}
 		// Use per-client monotonic counter as nonce (unique per key, no random needed)
-		cnt := cs.sendNonce.Add(1)
 		nonce := make([]byte, 12)
-		binary.LittleEndian.PutUint64(nonce[:8], cnt)
+		binary.LittleEndian.PutUint64(nonce[:8], t.cnt)
 		ct := aead.Seal(nil, nonce, plaintext, nil)
 
 		// CmdIncoming payload: [SenderSID(2 BE)][Counter(8 LE)][Ciphertext]
@@ -371,7 +405,7 @@ func broadcastEncrypted(senderSID uint16, plaintext []byte) {
 		copy(payload[2:10], nonce[:8])
 		copy(payload[10:], ct)
 
-		writeFrame(cs.conn, CmdIncoming, payload)
+		writeFrame(t.conn, CmdIncoming, payload)
 	}
 }
 
@@ -452,12 +486,16 @@ func broadcastOnlineAdd(newSID uint16, name string) {
 	payload = append(payload, nameBytes...)
 
 	sessMu.RLock()
-	defer sessMu.RUnlock()
+	conns := make([]net.Conn, 0, len(clients))
 	for sid, cs := range clients {
-		if sid == newSID {
-			continue
+		if sid != newSID {
+			conns = append(conns, cs.conn)
 		}
-		writeFrame(cs.conn, CmdOnlineAdd, payload)
+	}
+	sessMu.RUnlock()
+
+	for _, c := range conns {
+		writeFrame(c, CmdOnlineAdd, payload)
 	}
 }
 
@@ -465,10 +503,16 @@ func broadcastOnlineAdd(newSID uint16, name string) {
 // Called after the disconnected client is already removed from the clients map.
 func broadcastOnlineRemove(removedSID uint16) {
 	payload := []byte{byte(removedSID >> 8), byte(removedSID & 0xFF)}
+
 	sessMu.RLock()
-	defer sessMu.RUnlock()
+	conns := make([]net.Conn, 0, len(clients))
 	for _, cs := range clients {
-		writeFrame(cs.conn, CmdOnlineRemove, payload)
+		conns = append(conns, cs.conn)
+	}
+	sessMu.RUnlock()
+
+	for _, c := range conns {
+		writeFrame(c, CmdOnlineRemove, payload)
 	}
 }
 
