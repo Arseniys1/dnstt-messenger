@@ -4,11 +4,13 @@ import (
 	"crypto/ecdh"
 	"crypto/rand"
 	"database/sql"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"net"
 	"os"
 	"sync"
+	"sync/atomic"
 
 	"golang.org/x/crypto/chacha20poly1305"
 	_ "modernc.org/sqlite"
@@ -17,30 +19,56 @@ import (
 type Config struct {
 	ListenAddr   string `json:"listen_addr"`
 	DBPath       string `json:"db_path"`
-	MinPacketSize int   `json:"min_packet_size"`
-	HistoryLimit  int   `json:"history_limit"`
+	HistoryLimit int    `json:"history_limit"`
+	MaxFrameSize int    `json:"max_frame_size"`
 }
 
 const (
-	CmdRegister   = 0x01
-	CmdLogin      = 0x02
-	CmdMsg        = 0x03
-	CmdIncoming   = 0x04
-	CmdHistory    = 0x05
-	CmdHistoryEnd = 0x07
-	CmdLoginOK    = 0x08
-	CmdLoginFail  = 0x09
-	CmdOnlineList = 0x0A
+	CmdRegister     = 0x01
+	CmdLogin        = 0x02
+	CmdMsg          = 0x03
+	CmdIncoming     = 0x04
+	CmdHistory      = 0x05
+	CmdAck          = 0x06
+	CmdHistoryEnd   = 0x07
+	CmdLoginOK      = 0x08
+	CmdLoginFail    = 0x09
+	CmdOnlineList   = 0x0A
+	CmdOnlineAdd    = 0x0B
+	CmdOnlineRemove = 0x0C
+	CmdFragment     = 0x0D
 )
+
+// clientState holds all per-session state (replaces separate sessions/conns/keys maps).
+type clientState struct {
+	conn      net.Conn
+	key       []byte
+	login     string
+	sendNonce atomic.Uint64 // monotonic counter for server→client nonces
+}
+
+// fragKey identifies a reassembly buffer by session + message ID.
+type fragKey struct {
+	sid   uint16
+	msgID uint8
+}
+
+// fragBuf holds received fragments for a single fragmented message.
+type fragBuf struct {
+	frags    [256][]byte
+	total    uint8
+	received uint8
+}
 
 var (
 	cfg        Config
 	db         *sql.DB
-	sessions   = make(map[uint16]string)
-	conns      = make(map[uint16]net.Conn)
-	keys       = make(map[uint16][]byte) // SID -> sharedKey
+	clients    = make(map[uint16]*clientState)
 	sessMu     sync.RWMutex
 	sidCounter uint16
+
+	fragMu  sync.Mutex
+	fragMap = make(map[fragKey]*fragBuf)
 )
 
 func main() {
@@ -64,38 +92,39 @@ func main() {
 	}
 }
 
-// ecdhHandshake выполняет X25519 хендшейк и возвращает общий 32-байтный ключ.
-// Сервер первым отправляет свой публичный ключ, затем читает клиентский.
+// writeFrame sends [TotalLen(2 LE)][cmd(1)][payload...] to conn.
+// TotalLen = 1 + len(payload).
+func writeFrame(conn net.Conn, cmd byte, payload []byte) {
+	total := 1 + len(payload)
+	frame := make([]byte, 2+total)
+	binary.LittleEndian.PutUint16(frame[0:2], uint16(total))
+	frame[2] = cmd
+	copy(frame[3:], payload)
+	conn.Write(frame)
+}
+
 func ecdhHandshake(conn net.Conn) ([]byte, error) {
 	curve := ecdh.X25519()
-
 	privKey, err := curve.GenerateKey(rand.Reader)
 	if err != nil {
 		return nil, fmt.Errorf("генерация ключа: %w", err)
 	}
-
-	// Отправляем публичный ключ сервера (32 байта)
 	_, err = conn.Write(privKey.PublicKey().Bytes())
 	if err != nil {
 		return nil, fmt.Errorf("отправка публичного ключа: %w", err)
 	}
-
-	// Читаем публичный ключ клиента (32 байта)
 	clientPubBytes := make([]byte, 32)
 	if _, err = readFull(conn, clientPubBytes); err != nil {
 		return nil, fmt.Errorf("чтение публичного ключа клиента: %w", err)
 	}
-
 	clientPub, err := curve.NewPublicKey(clientPubBytes)
 	if err != nil {
 		return nil, fmt.Errorf("парсинг публичного ключа клиента: %w", err)
 	}
-
 	shared, err := privKey.ECDH(clientPub)
 	if err != nil {
 		return nil, fmt.Errorf("вычисление общего секрета: %w", err)
 	}
-
 	return shared, nil
 }
 
@@ -110,51 +139,77 @@ func handleConnection(conn net.Conn) {
 	fmt.Printf("🔐 ECDH хендшейк выполнен (%s)\n", conn.RemoteAddr())
 
 	var mySID uint16
+	var recvCounter uint64
+
 	defer func() {
 		if mySID != 0 {
 			sessMu.Lock()
-			login := sessions[mySID]
-			delete(sessions, mySID)
-			delete(conns, mySID)
-			delete(keys, mySID)
+			login := clients[mySID].login
+			delete(clients, mySID)
 			sessMu.Unlock()
 			fmt.Printf("👋 Отключился: %s (SID: %d)\n", login, mySID)
-			broadcastOnlineList()
+			broadcastOnlineRemove(mySID)
+
+			fragMu.Lock()
+			for k := range fragMap {
+				if k.sid == mySID {
+					delete(fragMap, k)
+				}
+			}
+			fragMu.Unlock()
 		}
 	}()
 
-	buf := make([]byte, 512)
+	// Accumulating buffer: parse complete frames even when TCP delivers partial data.
+	var pending []byte
+	tmp := make([]byte, 4096)
+
 	for {
-		n, err := conn.Read(buf)
+		n, err := conn.Read(tmp)
 		if err != nil {
 			return
 		}
-		if n < cfg.MinPacketSize {
-			continue
-		}
+		pending = append(pending, tmp[:n]...)
 
-		cmd := buf[0]
-		payload := buf[1:n]
+		for {
+			if len(pending) < 2 {
+				break
+			}
+			frameLen := int(binary.LittleEndian.Uint16(pending[0:2]))
+			if frameLen < 1 || len(pending) < 2+frameLen {
+				break
+			}
+			cmd := pending[2]
+			payload := make([]byte, frameLen-1)
+			copy(payload, pending[3:2+frameLen])
+			pending = pending[2+frameLen:]
 
-		switch cmd {
-		case CmdRegister:
-			handleRegister(conn, payload)
-		case CmdLogin:
-			mySID = handleLogin(conn, payload, sharedKey)
-		case CmdMsg:
-			handleMessage(conn, mySID, payload, sharedKey)
+			switch cmd {
+			case CmdRegister:
+				handleRegister(conn, payload)
+			case CmdLogin:
+				mySID = handleLogin(conn, payload, sharedKey)
+			case CmdMsg:
+				handleMessage(mySID, payload, sharedKey, &recvCounter)
+			case CmdFragment:
+				if mySID != 0 {
+					if reassembled := handleFragment(mySID, payload); reassembled != nil {
+						handleMessage(mySID, reassembled, sharedKey, &recvCounter)
+					}
+				}
+			}
 		}
 	}
 }
 
 func handleRegister(conn net.Conn, data []byte) {
 	if len(data) < 2 {
-		conn.Write([]byte{0x00})
+		writeFrame(conn, 0x00, nil)
 		return
 	}
 	lLen := int(data[0])
 	if len(data) < 1+lLen {
-		conn.Write([]byte{0x00})
+		writeFrame(conn, 0x00, nil)
 		return
 	}
 	login := string(data[1 : 1+lLen])
@@ -162,21 +217,21 @@ func handleRegister(conn net.Conn, data []byte) {
 
 	_, err := db.Exec("INSERT INTO users (login, password) VALUES (?, ?)", login, pass)
 	if err != nil {
-		conn.Write([]byte{0x00})
+		writeFrame(conn, 0x00, nil)
 		return
 	}
 	fmt.Printf("📝 Новый пользователь: %s\n", login)
-	conn.Write([]byte{0x01})
+	writeFrame(conn, 0x01, nil)
 }
 
 func handleLogin(conn net.Conn, data []byte, sharedKey []byte) uint16 {
 	if len(data) < 2 {
-		conn.Write([]byte{CmdLoginFail})
+		writeFrame(conn, CmdLoginFail, nil)
 		return 0
 	}
 	lLen := int(data[0])
 	if len(data) < 1+lLen {
-		conn.Write([]byte{CmdLoginFail})
+		writeFrame(conn, CmdLoginFail, nil)
 		return 0
 	}
 	login := string(data[1 : 1+lLen])
@@ -189,32 +244,50 @@ func handleLogin(conn net.Conn, data []byte, sharedKey []byte) uint16 {
 		sessMu.Lock()
 		sidCounter++
 		sid := sidCounter
-		sessions[sid] = login
-		conns[sid] = conn
-		keys[sid] = sharedKey
+		clients[sid] = &clientState{
+			conn:  conn,
+			key:   sharedKey,
+			login: login,
+		}
 		sessMu.Unlock()
 
-		conn.Write([]byte{CmdLoginOK, byte(sid >> 8), byte(sid & 0xFF)})
-		sendHistory(conn)
+		// 1. Notify client of its SID
+		writeFrame(conn, CmdLoginOK, []byte{byte(sid >> 8), byte(sid & 0xFF)})
+		// 2. Send full online list (with SIDs) so client builds its sidNames map
 		sendOnlineListTo(conn)
+		// 3. Send message history
+		sendHistory(conn)
+		writeFrame(conn, CmdHistoryEnd, nil)
+		// 4. Notify all existing clients about the new user (delta update)
+		broadcastOnlineAdd(sid, login)
+
 		fmt.Printf("🔑 Вошел: %s (SID: %d)\n", login, sid)
-		broadcastOnlineList()
 		return sid
 	}
-	conn.Write([]byte{CmdLoginFail})
+	writeFrame(conn, CmdLoginFail, nil)
 	return 0
 }
 
-func handleMessage(conn net.Conn, senderSID uint16, data []byte, sharedKey []byte) {
-	// [SID(2)][Nonce(12)][EncData]
-	if senderSID == 0 || len(data) < 14 {
+func handleMessage(senderSID uint16, data []byte, sharedKey []byte, recvCounter *uint64) {
+	// Payload: [Counter(8 LE)][Ciphertext(N+16)]
+	if senderSID == 0 || len(data) < 9 {
 		return
 	}
-	nonce := data[2:14]
-	ciphertext := data[14:]
+
+	cntVal := binary.LittleEndian.Uint64(data[0:8])
+	if cntVal <= *recvCounter {
+		fmt.Printf("⚠️ Повторное сообщение от SID %d (счётчик %d <= %d)\n", senderSID, cntVal, *recvCounter)
+		return
+	}
+	*recvCounter = cntVal
+
+	// Nonce: 8-byte counter (LE) + 4 zero bytes = 12 bytes total
+	nonce := make([]byte, 12)
+	copy(nonce[:8], data[0:8])
+	ciphertext := data[8:]
 
 	sessMu.RLock()
-	user, ok := sessions[senderSID]
+	cs, ok := clients[senderSID]
 	sessMu.RUnlock()
 	if !ok {
 		return
@@ -225,40 +298,80 @@ func handleMessage(conn net.Conn, senderSID uint16, data []byte, sharedKey []byt
 		return
 	}
 
-	saveMessage(user, string(decrypted))
-	fmt.Printf("📩 [%s]: %s\n", user, string(decrypted))
-	conn.Write([]byte{0x06})
+	saveMessage(cs.login, string(decrypted))
+	fmt.Printf("📩 [%s]: %s\n", cs.login, string(decrypted))
+	writeFrame(cs.conn, CmdAck, nil)
 
-	broadcastEncrypted(senderSID, user, decrypted)
+	broadcastEncrypted(senderSID, decrypted)
 }
 
-func broadcastEncrypted(senderSID uint16, senderName string, plaintext []byte) {
-	senderBytes := []byte(senderName)
+// handleFragment stores a fragment and returns the reassembled CmdMsg payload when all arrive.
+func handleFragment(senderSID uint16, data []byte) []byte {
+	if len(data) < 4 {
+		return nil
+	}
+	msgID := data[0]
+	fragIdx := data[1]
+	fragCount := data[2]
+	chunk := data[3:]
 
+	if fragCount == 0 || fragIdx >= fragCount {
+		return nil
+	}
+
+	key := fragKey{senderSID, msgID}
+	fragMu.Lock()
+	defer fragMu.Unlock()
+
+	fb, ok := fragMap[key]
+	if !ok {
+		fb = &fragBuf{total: fragCount}
+		fragMap[key] = fb
+	}
+	if fb.frags[fragIdx] == nil {
+		fb.frags[fragIdx] = make([]byte, len(chunk))
+		copy(fb.frags[fragIdx], chunk)
+		fb.received++
+	}
+	if fb.received < fb.total {
+		return nil
+	}
+
+	// All fragments received — reassemble in order
+	var assembled []byte
+	for i := uint8(0); i < fb.total; i++ {
+		assembled = append(assembled, fb.frags[i]...)
+	}
+	delete(fragMap, key)
+	return assembled
+}
+
+func broadcastEncrypted(senderSID uint16, plaintext []byte) {
 	sessMu.RLock()
 	defer sessMu.RUnlock()
 
-	for sid, c := range conns {
+	for sid, cs := range clients {
 		if sid == senderSID {
 			continue
 		}
-		key := keys[sid]
-		aead, err := chacha20poly1305.New(key)
+		aead, err := chacha20poly1305.New(cs.key)
 		if err != nil {
 			continue
 		}
-		nonce := make([]byte, aead.NonceSize())
-		if _, err = rand.Read(nonce); err != nil {
-			continue
-		}
+		// Use per-client monotonic counter as nonce (unique per key, no random needed)
+		cnt := cs.sendNonce.Add(1)
+		nonce := make([]byte, 12)
+		binary.LittleEndian.PutUint64(nonce[:8], cnt)
 		ct := aead.Seal(nil, nonce, plaintext, nil)
 
-		packet := []byte{CmdIncoming, byte(len(senderBytes))}
-		packet = append(packet, senderBytes...)
-		packet = append(packet, nonce...)
-		packet = append(packet, byte(len(ct)>>8), byte(len(ct)))
-		packet = append(packet, ct...)
-		c.Write(packet)
+		// CmdIncoming payload: [SenderSID(2 BE)][Counter(8 LE)][Ciphertext]
+		payload := make([]byte, 2+8+len(ct))
+		payload[0] = byte(senderSID >> 8)
+		payload[1] = byte(senderSID & 0xFF)
+		copy(payload[2:10], nonce[:8])
+		copy(payload[10:], ct)
+
+		writeFrame(cs.conn, CmdIncoming, payload)
 	}
 }
 
@@ -269,72 +382,93 @@ func sendHistory(conn net.Conn) {
 	}
 
 	rows, err := db.Query(
-		`SELECT sender, content, created_at FROM messages ORDER BY id DESC LIMIT ?`, limit,
+		`SELECT sender, content, CAST(created_at AS INTEGER) FROM messages ORDER BY id DESC LIMIT ?`, limit,
 	)
 	if err != nil {
-		conn.Write([]byte{CmdHistoryEnd})
 		return
 	}
 	defer rows.Close()
 
-	type msgRow struct{ sender, content, createdAt string }
+	type msgRow struct {
+		sender, content string
+		createdAt       int64
+	}
 	var msgs []msgRow
 	for rows.Next() {
 		var m msgRow
-		rows.Scan(&m.sender, &m.content, &m.createdAt)
+		if err := rows.Scan(&m.sender, &m.content, &m.createdAt); err != nil {
+			continue
+		}
 		msgs = append(msgs, m)
 	}
 
+	// Reverse to chronological order
 	for i, j := 0, len(msgs)-1; i < j; i, j = i+1, j-1 {
 		msgs[i], msgs[j] = msgs[j], msgs[i]
 	}
 
 	for _, m := range msgs {
-		timeStr := m.createdAt
-		if len(timeStr) > 16 {
-			timeStr = timeStr[:16]
-		}
+		ts := uint32(m.createdAt)
 		senderBytes := []byte(m.sender)
-		timeBytes := []byte(timeStr)
 		contentBytes := []byte(m.content)
-		msgLen := len(contentBytes)
 
-		packet := []byte{CmdHistory, byte(len(senderBytes))}
-		packet = append(packet, senderBytes...)
-		packet = append(packet, byte(len(timeBytes)))
-		packet = append(packet, timeBytes...)
-		packet = append(packet, byte(msgLen>>8), byte(msgLen))
-		packet = append(packet, contentBytes...)
-		conn.Write(packet)
+		// CmdHistory payload: [SenderLen(1)][Sender(N)][Timestamp(4 BE)][Content...]
+		// Content length is implicit from frame length (saves 2 bytes vs explicit MsgLen).
+		payload := make([]byte, 0, 1+len(senderBytes)+4+len(contentBytes))
+		payload = append(payload, byte(len(senderBytes)))
+		payload = append(payload, senderBytes...)
+		payload = append(payload, byte(ts>>24), byte(ts>>16), byte(ts>>8), byte(ts))
+		payload = append(payload, contentBytes...)
+		writeFrame(conn, CmdHistory, payload)
 	}
-
-	conn.Write([]byte{CmdHistoryEnd})
 }
 
-// buildOnlinePacket строит компактный пакет со списком онлайн пользователей.
-// Формат: [0x0A][count][len1][name1]...[lenN][nameN]
+// buildOnlinePacket builds [Count(1)][SID(2 BE)][NameLen(1)][Name]...
+// Includes SIDs so clients can build a SID→name map for CmdIncoming resolution.
 func buildOnlinePacket() []byte {
 	sessMu.RLock()
 	defer sessMu.RUnlock()
-	packet := []byte{CmdOnlineList, byte(len(sessions))}
-	for _, name := range sessions {
-		b := []byte(name)
-		packet = append(packet, byte(len(b)))
-		packet = append(packet, b...)
+	pkt := []byte{byte(len(clients))}
+	for sid, cs := range clients {
+		b := []byte(cs.login)
+		pkt = append(pkt, byte(sid>>8), byte(sid&0xFF))
+		pkt = append(pkt, byte(len(b)))
+		pkt = append(pkt, b...)
 	}
-	return packet
+	return pkt
 }
 
 func sendOnlineListTo(conn net.Conn) {
-	conn.Write(buildOnlinePacket())
+	writeFrame(conn, CmdOnlineList, buildOnlinePacket())
 }
 
-func broadcastOnlineList() {
-	packet := buildOnlinePacket()
+// broadcastOnlineAdd sends CmdOnlineAdd to all existing sessions except newSID.
+// Called after the new client is already in the clients map.
+func broadcastOnlineAdd(newSID uint16, name string) {
+	nameBytes := []byte(name)
+	payload := make([]byte, 0, 3+len(nameBytes))
+	payload = append(payload, byte(newSID>>8), byte(newSID&0xFF))
+	payload = append(payload, byte(len(nameBytes)))
+	payload = append(payload, nameBytes...)
+
 	sessMu.RLock()
 	defer sessMu.RUnlock()
-	for _, c := range conns {
-		c.Write(packet)
+	for sid, cs := range clients {
+		if sid == newSID {
+			continue
+		}
+		writeFrame(cs.conn, CmdOnlineAdd, payload)
+	}
+}
+
+// broadcastOnlineRemove sends CmdOnlineRemove to all remaining sessions.
+// Called after the disconnected client is already removed from the clients map.
+func broadcastOnlineRemove(removedSID uint16) {
+	payload := []byte{byte(removedSID >> 8), byte(removedSID & 0xFF)}
+	sessMu.RLock()
+	defer sessMu.RUnlock()
+	for _, cs := range clients {
+		writeFrame(cs.conn, CmdOnlineRemove, payload)
 	}
 }
 
@@ -350,7 +484,6 @@ func decryptWith(key, data, nonce []byte) ([]byte, error) {
 	return aead.Open(nil, nonce, data, nil)
 }
 
-// readFull читает ровно len(buf) байт из conn.
 func readFull(conn net.Conn, buf []byte) (int, error) {
 	total := 0
 	for total < len(buf) {
@@ -365,10 +498,10 @@ func readFull(conn net.Conn, buf []byte) (int, error) {
 
 func loadConfig(path string) {
 	cfg = Config{
-		ListenAddr:    "0.0.0.0:9999",
-		DBPath:        "./messenger.db",
-		MinPacketSize: 2,
-		HistoryLimit:  50,
+		ListenAddr:   "0.0.0.0:9999",
+		DBPath:       "./messenger.db",
+		HistoryLimit: 50,
+		MaxFrameSize: 180,
 	}
 	f, err := os.Open(path)
 	if err != nil {
@@ -394,6 +527,8 @@ func initDB() {
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		sender TEXT NOT NULL,
 		content TEXT NOT NULL,
-		created_at TEXT DEFAULT (datetime('now'))
+		created_at INTEGER DEFAULT (strftime('%s','now'))
 	);`)
+	// Migrate old TEXT timestamps ("YYYY-MM-DD HH:MM:SS") to INTEGER unix timestamps.
+	db.Exec(`UPDATE messages SET created_at = CAST(strftime('%s', created_at) AS INTEGER) WHERE typeof(created_at) = 'text'`)
 }

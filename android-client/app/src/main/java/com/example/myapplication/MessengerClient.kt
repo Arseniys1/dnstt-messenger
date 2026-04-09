@@ -18,20 +18,28 @@ import java.io.OutputStream
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.security.SecureRandom
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 
 // ---- Protocol commands ----
 object Cmd {
-    const val REGISTER    = 0x01.toByte()
-    const val LOGIN       = 0x02.toByte()
-    const val MSG         = 0x03.toByte()
-    const val INCOMING    = 0x04.toByte()
-    const val HISTORY     = 0x05.toByte()
-    const val ACK         = 0x06.toByte()
-    const val HISTORY_END = 0x07.toByte()
-    const val LOGIN_OK    = 0x08.toByte()
-    const val LOGIN_FAIL  = 0x09.toByte()
-    const val ONLINE_LIST = 0x0A.toByte()
+    const val REGISTER      = 0x01.toByte()
+    const val LOGIN         = 0x02.toByte()
+    const val MSG           = 0x03.toByte()
+    const val INCOMING      = 0x04.toByte()
+    const val HISTORY       = 0x05.toByte()
+    const val ACK           = 0x06.toByte()
+    const val HISTORY_END   = 0x07.toByte()
+    const val LOGIN_OK      = 0x08.toByte()
+    const val LOGIN_FAIL    = 0x09.toByte()
+    const val ONLINE_LIST   = 0x0A.toByte()
+    const val ONLINE_ADD    = 0x0B.toByte()
+    const val ONLINE_REMOVE = 0x0C.toByte()
+    const val FRAGMENT      = 0x0D.toByte()
 }
+
+private const val MAX_FRAME_SIZE = 180 // conservative limit for DNS tunnel MTU
 
 data class AppConfig(
     val serverAddr: String = "94.103.169.82:9999",
@@ -51,6 +59,8 @@ sealed class ServerEvent {
     data class History(val msg: ChatMessage) : ServerEvent()
     object HistoryEnd : ServerEvent()
     data class OnlineList(val users: List<String>) : ServerEvent()
+    data class OnlineAdd(val sid: Int, val name: String) : ServerEvent()
+    data class OnlineRemove(val sid: Int, val name: String) : ServerEvent()
     object LoginOk : ServerEvent()
     object LoginFail : ServerEvent()
     object Disconnected : ServerEvent()
@@ -64,19 +74,25 @@ class MessengerClient {
     var sessionID: Int = 0
         private set
 
-    // Single event stream — both login result and chat events come through here
     private val _events = MutableSharedFlow<ServerEvent>(extraBufferCapacity = 64)
     val events: SharedFlow<ServerEvent> = _events
 
     private var readerJob: Job? = null
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
+    // Per-connection nonce counter (client→server direction)
+    private val sendCounter = AtomicLong(0)
+    // Fragment message ID counter
+    private val fragCounter = AtomicInteger(0)
+    // SID → username map, kept in sync with CmdOnlineList/Add/Remove
+    val sidNames = ConcurrentHashMap<Int, String>()
+
     // ---- Connect ----
     suspend fun connect(cfg: AppConfig): Result<Unit> = withContext(Dispatchers.IO) {
         try {
             val (host, port) = parseAddr(cfg.serverAddr)
             val sock = Socket()
-            sock.soTimeout = 15_000 // read timeout during handshake
+            sock.soTimeout = 15_000
             if (cfg.directMode) {
                 sock.connect(InetSocketAddress(host, port), 10_000)
             } else {
@@ -89,7 +105,7 @@ class MessengerClient {
             din    = DataInputStream(rawIn)
             output = sock.getOutputStream()
             sharedKey = ecdhHandshake()
-            sock.soTimeout = 0 // remove timeout after handshake — reads are blocking in reader loop
+            sock.soTimeout = 0
             Result.success(Unit)
         } catch (e: Exception) {
             Result.failure(e)
@@ -112,16 +128,14 @@ class MessengerClient {
         }
     }
 
-    // ---- Login (sends packet, waits for LoginOk/LoginFail via events) ----
+    // ---- Login ----
     suspend fun login(login: String, pass: String): Result<Int> {
         val lBytes = login.toByteArray()
         val pBytes = pass.toByteArray()
-        val pkt = byteArrayOf(Cmd.LOGIN, lBytes.size.toByte()) + lBytes + pBytes
+        val payload = byteArrayOf(lBytes.size.toByte()) + lBytes + pBytes
         return withContext(Dispatchers.IO) {
             try {
-                output!!.write(pkt)
-                output!!.flush()
-                // Wait for LOGIN_OK or LOGIN_FAIL from the reader loop
+                writeFrame(Cmd.LOGIN, payload)
                 val deferred = CompletableDeferred<Result<Int>>()
                 val job = scope.launch {
                     events.collect { event ->
@@ -142,7 +156,6 @@ class MessengerClient {
                         }
                     }
                 }
-                // Timeout
                 val result = withTimeoutOrNull(8000) { deferred.await() }
                     ?: Result.failure(Exception("Login timeout"))
                 job.cancel()
@@ -158,100 +171,184 @@ class MessengerClient {
         try {
             val lBytes = login.toByteArray()
             val pBytes = pass.toByteArray()
-            val pkt = byteArrayOf(Cmd.REGISTER, lBytes.size.toByte()) + lBytes + pBytes
-            output!!.write(pkt)
-            output!!.flush()
+            val payload = byteArrayOf(lBytes.size.toByte()) + lBytes + pBytes
+            writeFrame(Cmd.REGISTER, payload)
+            // Read the framed register response directly (startReader not called yet)
             socket!!.soTimeout = 5000
-            val res = ByteArray(1)
-            din!!.readFully(res)
+            val frame = readFrame() ?: return@withContext Result.failure(Exception("No response"))
             socket!!.soTimeout = 0
-            Result.success(res[0] == 0x01.toByte())
+            Result.success(frame.isNotEmpty() && frame[0] == 0x01.toByte())
         } catch (e: Exception) {
             Result.failure(e)
         }
     }
 
-    // ---- Send message ----
+    // ---- Send message (with counter nonce and optional fragmentation) ----
     suspend fun sendMessage(text: String): Result<Unit> = withContext(Dispatchers.IO) {
         try {
             val key = sharedKey ?: return@withContext Result.failure(Exception("No key"))
-            val nonce = ByteArray(12).also { SecureRandom().nextBytes(it) }
+            val cnt = sendCounter.incrementAndGet()
+            // Nonce: 8-byte LE counter + 4 zero bytes = 12 bytes
+            val nonce = ByteArray(12)
+            for (i in 0..7) nonce[i] = ((cnt ushr (i * 8)) and 0xFF).toByte()
+
             val ciphertext = chachaEncrypt(key, nonce, text.toByteArray(Charsets.UTF_8))
-            val sid = sessionID
-            val pkt = byteArrayOf(Cmd.MSG, ((sid shr 8) and 0xFF).toByte(), (sid and 0xFF).toByte()) +
-                      nonce + ciphertext
-            output!!.write(pkt)
-            output!!.flush()
+
+            // msgPayload = [Counter(8 LE)][Ciphertext(N+16)]
+            val msgPayload = nonce.sliceArray(0..7) + ciphertext
+
+            // Frame = 2 (len prefix) + 1 (cmd) + msgPayload.size
+            if (3 + msgPayload.size <= MAX_FRAME_SIZE) {
+                writeFrame(Cmd.MSG, msgPayload)
+            } else {
+                // Fragment the message
+                val msgId    = (fragCounter.incrementAndGet() and 0xFF).toByte()
+                val maxChunk = MAX_FRAME_SIZE - 6 // 2 (len) + 1 (cmd) + 3 (msgID, fragIdx, fragCount)
+                val chunks   = msgPayload.toList().chunked(maxChunk.coerceAtLeast(1))
+                val fragCount = chunks.size.toByte()
+                chunks.forEachIndexed { idx, chunk ->
+                    val fp = byteArrayOf(msgId, idx.toByte(), fragCount) + chunk.toByteArray()
+                    writeFrame(Cmd.FRAGMENT, fp)
+                }
+            }
             Result.success(Unit)
         } catch (e: Exception) {
             Result.failure(e)
         }
     }
 
-    // ---- Read exactly one event from stream (blocking) ----
+    // ---- Read exactly one framed event (blocking) ----
     private fun readOneEvent(): ServerEvent? {
-        val inp = din ?: return ServerEvent.Disconnected
-        val cmdByte = inp.read()
-        if (cmdByte == -1) return ServerEvent.Disconnected
-        return when (cmdByte.toByte()) {
+        val frame = readFrame() ?: return ServerEvent.Disconnected
+        if (frame.isEmpty()) return null
+        val cmd     = frame[0]
+        val payload = if (frame.size > 1) frame.sliceArray(1 until frame.size) else ByteArray(0)
+        return when (cmd) {
             Cmd.LOGIN_OK -> {
-                val hi = inp.read(); val lo = inp.read()
-                if (hi == -1 || lo == -1) return ServerEvent.Disconnected
-                sessionID = (hi shl 8) or lo
+                if (payload.size < 2) return null
+                sessionID = ((payload[0].toInt() and 0xFF) shl 8) or (payload[1].toInt() and 0xFF)
                 ServerEvent.LoginOk
             }
-            Cmd.LOGIN_FAIL -> ServerEvent.LoginFail
-            Cmd.ACK        -> null  // skip, read next
+            Cmd.LOGIN_FAIL  -> ServerEvent.LoginFail
+            Cmd.ACK         -> null
             Cmd.HISTORY_END -> ServerEvent.HistoryEnd
-            Cmd.HISTORY    -> parseHistory(inp)
-            Cmd.INCOMING   -> parseIncoming(inp)
-            Cmd.ONLINE_LIST -> parseOnlineList(inp)
-            else -> null  // unknown byte, skip
+            Cmd.HISTORY     -> parseHistory(payload)
+            Cmd.INCOMING    -> parseIncoming(payload)
+            Cmd.ONLINE_LIST -> parseOnlineList(payload)
+            Cmd.ONLINE_ADD  -> parseOnlineAdd(payload)
+            Cmd.ONLINE_REMOVE -> parseOnlineRemove(payload)
+            else -> null
+        }
+    }
+
+    // Read one complete frame: reads 2-byte LE length then that many bytes.
+    // Returns null on EOF/error.
+    private fun readFrame(): ByteArray? {
+        val inp = din ?: return null
+        return try {
+            val lenBytes = ByteArray(2)
+            inp.readFully(lenBytes)
+            val frameLen = (lenBytes[0].toInt() and 0xFF) or ((lenBytes[1].toInt() and 0xFF) shl 8)
+            if (frameLen < 1) return ByteArray(0)
+            val frame = ByteArray(frameLen)
+            inp.readFully(frame)
+            frame
+        } catch (_: Exception) {
+            null
         }
     }
 
     // ---- Parsers ----
 
-    private fun parseHistory(inp: DataInputStream): ServerEvent? {
-        val senderLen = inp.read().takeIf { it >= 0 } ?: return ServerEvent.Disconnected
-        val senderBytes = ByteArray(senderLen).also { inp.readFully(it) }
-        val timeLen = inp.read().takeIf { it >= 0 } ?: return ServerEvent.Disconnected
-        val timeBytes = ByteArray(timeLen).also { inp.readFully(it) }
-        val msgLen = (inp.read() shl 8) or inp.read()
-        val msgBytes = ByteArray(msgLen).also { inp.readFully(it) }
-        return ServerEvent.History(
-            ChatMessage(
-                sender = String(senderBytes),
-                text   = String(msgBytes),
-                time   = String(timeBytes).take(16)
-            )
-        )
+    private fun parseHistory(payload: ByteArray): ServerEvent? {
+        // Payload: [SenderLen(1)][Sender(N)][Timestamp(4 BE)][Content...]
+        if (payload.size < 6) return null
+        val senderLen = payload[0].toInt() and 0xFF
+        if (payload.size < 1 + senderLen + 4) return null
+        val sender  = String(payload, 1, senderLen)
+        val tsOff   = 1 + senderLen
+        val ts      = ((payload[tsOff].toInt() and 0xFF) shl 24) or
+                      ((payload[tsOff + 1].toInt() and 0xFF) shl 16) or
+                      ((payload[tsOff + 2].toInt() and 0xFF) shl 8) or
+                      (payload[tsOff + 3].toInt() and 0xFF)
+        val content = String(payload, tsOff + 4, payload.size - (tsOff + 4))
+        val timeStr = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault())
+            .format(java.util.Date(ts.toLong() * 1000L))
+        return ServerEvent.History(ChatMessage(sender = sender, text = content, time = timeStr))
     }
 
-    private fun parseIncoming(inp: DataInputStream): ServerEvent? {
-        val senderLen = inp.read().takeIf { it >= 0 } ?: return ServerEvent.Disconnected
-        val senderBytes = ByteArray(senderLen).also { inp.readFully(it) }
-        val nonce = ByteArray(12).also { inp.readFully(it) }
-        val ctLen = (inp.read() shl 8) or inp.read()
-        val ct = ByteArray(ctLen).also { inp.readFully(it) }
+    private fun parseIncoming(payload: ByteArray): ServerEvent? {
+        // Payload: [SenderSID(2 BE)][Counter(8 LE)][Ciphertext(N+16)]
+        if (payload.size < 2 + 8 + 16) return null
+        val senderSID = ((payload[0].toInt() and 0xFF) shl 8) or (payload[1].toInt() and 0xFF)
+        // Nonce: bytes 2-9 = counter (8 bytes LE), bytes 10-11 = zero (already zero in ByteArray)
+        val nonce = ByteArray(12)
+        payload.copyInto(nonce, destinationOffset = 0, startIndex = 2, endIndex = 10)
+        val ciphertext = payload.sliceArray(10 until payload.size)
         val key = sharedKey ?: return null
         return try {
-            val plain = chachaDecrypt(key, nonce, ct)
-            val now = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault())
+            val plain      = chachaDecrypt(key, nonce, ciphertext)
+            val senderName = sidNames[senderSID] ?: "SID:$senderSID"
+            val now        = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault())
                 .format(java.util.Date())
-            ServerEvent.Message(ChatMessage(sender = String(senderBytes), text = String(plain), time = now))
+            ServerEvent.Message(ChatMessage(sender = senderName, text = String(plain), time = now))
         } catch (_: Exception) { null }
     }
 
-    private fun parseOnlineList(inp: DataInputStream): ServerEvent? {
-        val count = inp.read().takeIf { it >= 0 } ?: return ServerEvent.Disconnected
-        val names = mutableListOf<String>()
+    private fun parseOnlineList(payload: ByteArray): ServerEvent? {
+        // Payload: [Count(1)][SID(2 BE)][NameLen(1)][Name]...
+        if (payload.isEmpty()) return null
+        val count  = payload[0].toInt() and 0xFF
+        var off    = 1
+        val newMap = HashMap<Int, String>()
+        val names  = mutableListOf<String>()
         repeat(count) {
-            val nLen = inp.read()
-            val nb = ByteArray(nLen).also { inp.readFully(it) }
-            names += String(nb)
+            if (off + 3 > payload.size) return null
+            val sid  = ((payload[off].toInt() and 0xFF) shl 8) or (payload[off + 1].toInt() and 0xFF)
+            off += 2
+            val nLen = payload[off].toInt() and 0xFF; off++
+            if (off + nLen > payload.size) return null
+            val name = String(payload, off, nLen); off += nLen
+            newMap[sid] = name
+            names += name
         }
+        sidNames.clear()
+        sidNames.putAll(newMap)
         return ServerEvent.OnlineList(names)
+    }
+
+    private fun parseOnlineAdd(payload: ByteArray): ServerEvent? {
+        // Payload: [SID(2 BE)][NameLen(1)][Name]
+        if (payload.size < 4) return null
+        val sid  = ((payload[0].toInt() and 0xFF) shl 8) or (payload[1].toInt() and 0xFF)
+        val nLen = payload[2].toInt() and 0xFF
+        if (3 + nLen > payload.size) return null
+        val name = String(payload, 3, nLen)
+        sidNames[sid] = name
+        return ServerEvent.OnlineAdd(sid, name)
+    }
+
+    private fun parseOnlineRemove(payload: ByteArray): ServerEvent? {
+        // Payload: [SID(2 BE)]
+        if (payload.size < 2) return null
+        val sid  = ((payload[0].toInt() and 0xFF) shl 8) or (payload[1].toInt() and 0xFF)
+        val name = sidNames.remove(sid) ?: ""
+        return ServerEvent.OnlineRemove(sid, name)
+    }
+
+    // ---- Write helpers ----
+
+    // writeFrame sends [TotalLen(2 LE)][cmd(1)][payload...] and flushes.
+    private fun writeFrame(cmd: Byte, payload: ByteArray) {
+        val out = output ?: return
+        val total = 1 + payload.size
+        val frame = ByteArray(2 + total)
+        frame[0] = (total and 0xFF).toByte()
+        frame[1] = ((total ushr 8) and 0xFF).toByte()
+        frame[2] = cmd
+        payload.copyInto(frame, 3)
+        out.write(frame)
+        out.flush()
     }
 
     // ---- SOCKS5 ----
@@ -285,7 +382,7 @@ class MessengerClient {
         val inp = din!!; val out = output!!
         val gen = X25519KeyPairGenerator()
         gen.init(X25519KeyGenerationParameters(SecureRandom()))
-        val kp = gen.generateKeyPair()
+        val kp      = gen.generateKeyPair()
         val privKey = kp.private as X25519PrivateKeyParameters
         val pubKey  = kp.public  as X25519PublicKeyParameters
         val serverPubBytes = ByteArray(32); inp.readFully(serverPubBytes)

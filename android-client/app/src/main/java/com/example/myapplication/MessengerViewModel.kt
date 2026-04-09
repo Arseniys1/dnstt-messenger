@@ -210,6 +210,17 @@ class MessengerViewModel(app: Application) : AndroidViewModel(app) {
             is ServerEvent.OnlineList -> {
                 _state.value = _state.value.copy(onlineUsers = event.users)
             }
+            is ServerEvent.OnlineAdd -> {
+                val updated = (_state.value.onlineUsers + event.name).distinct()
+                _state.value = _state.value.copy(onlineUsers = updated)
+            }
+            is ServerEvent.OnlineRemove -> {
+                if (event.name.isNotEmpty()) {
+                    _state.value = _state.value.copy(
+                        onlineUsers = _state.value.onlineUsers.filter { it != event.name }
+                    )
+                }
+            }
             is ServerEvent.Disconnected -> {
                 if (_state.value.screen == Screen.CHAT) {
                     _state.value = _state.value.copy(

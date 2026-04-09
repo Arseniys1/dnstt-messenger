@@ -2,6 +2,9 @@
  * MessengerClient — реализует бинарный протокол dnstt-messenger.
  * Поддерживает прямое TCP и SOCKS5 подключение (для dnstt).
  * Шифрование: X25519 ECDH хендшейк + ChaCha20-Poly1305.
+ *
+ * Protocol frame format: [TotalLen(2 LE)][Cmd(1)][Payload...]
+ * TotalLen = 1 + len(Payload).
  */
 
 const net = require('net');
@@ -20,22 +23,27 @@ async function loadCrypto() {
 }
 
 const CMD = {
-  REGISTER:    0x01,
-  LOGIN:       0x02,
-  MSG:         0x03,
-  INCOMING:    0x04,
-  HISTORY:     0x05,
-  ACK:         0x06,
-  HISTORY_END: 0x07,
-  LOGIN_OK:    0x08,
-  LOGIN_FAIL:  0x09,
-  ONLINE_LIST: 0x0A,
+  REGISTER:      0x01,
+  LOGIN:         0x02,
+  MSG:           0x03,
+  INCOMING:      0x04,
+  HISTORY:       0x05,
+  ACK:           0x06,
+  HISTORY_END:   0x07,
+  LOGIN_OK:      0x08,
+  LOGIN_FAIL:    0x09,
+  ONLINE_LIST:   0x0A,
+  ONLINE_ADD:    0x0B,
+  ONLINE_REMOVE: 0x0C,
+  FRAGMENT:      0x0D,
 };
+
+const MAX_FRAME_SIZE = 180; // conservative limit for DNS tunnel MTU
 
 class MessengerClient extends EventEmitter {
   constructor(cfg) {
     super();
-    this.cfg = cfg;         // { proxy_addr, server_addr, direct_mode }
+    this.cfg = cfg;              // { proxy_addr, server_addr, direct_mode }
     this.socket = null;
     this.sharedKey = null;
     this.sessionID = 0;
@@ -43,9 +51,11 @@ class MessengerClient extends EventEmitter {
     this._registerResolve = null;
     this._loginHandled = false;
     this._buf = Buffer.alloc(0);
+    this._sendCounter = 0;       // monotonic nonce counter (client→server)
+    this._fragCounter = 0;       // fragment message ID counter
+    this._sidNames = new Map();  // SID (number) → username string
   }
 
-  // Парсим "host:port" строку
   _parseAddr(addr) {
     const idx = addr.lastIndexOf(':');
     return { host: addr.slice(0, idx), port: parseInt(addr.slice(idx + 1), 10) };
@@ -69,18 +79,15 @@ class MessengerClient extends EventEmitter {
 
     this.socket = socket;
 
-    // Хендшейк ДОЛЖЕН завершиться до того, как мы начнём слушать данные приложения
     try {
       const { sharedKey, leftover } = await this._ecdhHandshake(socket);
       this.sharedKey = sharedKey;
-      // Если сервер прислал данные вместе с pubkey — кладём в буфер
       if (leftover.length > 0) this._buf = leftover;
     } catch (e) {
       socket.destroy();
       return { ok: false, error: 'ECDH failed: ' + e.message };
     }
 
-    // Только после хендшейка вешаем основной обработчик данных
     socket.on('data', (d) => this._onData(d));
     socket.on('close', () => { this.emit('disconnected'); });
     socket.on('error', () => { this.emit('disconnected'); });
@@ -107,8 +114,6 @@ class MessengerClient extends EventEmitter {
     return info.socket;
   }
 
-  // X25519 ECDH: сервер шлёт 32 байта pubkey, клиент отвечает своим.
-  // Возвращает { sharedKey, leftover }
   _ecdhHandshake(socket) {
     return new Promise((resolve, reject) => {
       let buf = Buffer.alloc(0);
@@ -124,14 +129,9 @@ class MessengerClient extends EventEmitter {
         const leftover = buf.slice(32);
 
         try {
-          // Генерируем X25519 ключевую пару через @noble/curves
           const privKey = x25519.utils.randomSecretKey();
           const pubKey  = x25519.getPublicKey(privKey);
-
-          // Отправляем наш публичный ключ серверу
           socket.write(Buffer.from(pubKey));
-
-          // Вычисляем общий секрет
           const shared = x25519.getSharedSecret(privKey, serverPubBytes);
           resolve({ sharedKey: Buffer.from(shared), leftover });
         } catch (e) {
@@ -145,19 +145,27 @@ class MessengerClient extends EventEmitter {
     });
   }
 
+  // --- Build a length-prefixed frame: [TotalLen(2 LE)][cmd(1)][payload...] ---
+  _buildFrame(cmd, payloadBuf) {
+    const total = 1 + payloadBuf.length;
+    const frame = Buffer.alloc(2 + total);
+    frame.writeUInt16LE(total, 0);
+    frame[2] = cmd;
+    payloadBuf.copy(frame, 3);
+    return frame;
+  }
+
   // --- Регистрация ---
   register(login, pass) {
     return new Promise((resolve) => {
       this._registerResolve = resolve;
       const lBuf = Buffer.from(login);
       const pBuf = Buffer.from(pass);
-      const pkt = Buffer.alloc(2 + lBuf.length + pBuf.length);
-      pkt[0] = CMD.REGISTER;
-      pkt[1] = lBuf.length;
-      lBuf.copy(pkt, 2);
-      pBuf.copy(pkt, 2 + lBuf.length);
-      this.socket.write(pkt);
-      // таймаут 5 сек
+      const payload = Buffer.alloc(1 + lBuf.length + pBuf.length);
+      payload[0] = lBuf.length;
+      lBuf.copy(payload, 1);
+      pBuf.copy(payload, 1 + lBuf.length);
+      this.socket.write(this._buildFrame(CMD.REGISTER, payload));
       setTimeout(() => {
         if (this._registerResolve) {
           this._registerResolve = null;
@@ -174,12 +182,11 @@ class MessengerClient extends EventEmitter {
       this._loginResolve = resolve;
       const lBuf = Buffer.from(login);
       const pBuf = Buffer.from(pass);
-      const pkt = Buffer.alloc(2 + lBuf.length + pBuf.length);
-      pkt[0] = CMD.LOGIN;
-      pkt[1] = lBuf.length;
-      lBuf.copy(pkt, 2);
-      pBuf.copy(pkt, 2 + lBuf.length);
-      this.socket.write(pkt);
+      const payload = Buffer.alloc(1 + lBuf.length + pBuf.length);
+      payload[0] = lBuf.length;
+      lBuf.copy(payload, 1);
+      pBuf.copy(payload, 1 + lBuf.length);
+      this.socket.write(this._buildFrame(CMD.LOGIN, payload));
       setTimeout(() => {
         if (this._loginResolve) {
           this._loginResolve = null;
@@ -189,29 +196,52 @@ class MessengerClient extends EventEmitter {
     });
   }
 
-  // --- Отправка сообщения (ChaCha20-Poly1305 via @noble/ciphers) ---
+  // --- Отправка сообщения ---
   sendMessage(text) {
-    if (!this.sharedKey || !this.sessionID) return false;
-    const nonce = crypto.randomBytes(12);
-    const key   = new Uint8Array(this.sharedKey);
-    const msg   = new TextEncoder().encode(text);
+    if (!this.sharedKey) return false;
+    // Counter-based nonce: 8-byte LE counter + 4 zero bytes = 12 bytes total
+    this._sendCounter++;
+    const nonce = Buffer.alloc(12); // all zeros initially
+    nonce.writeUInt32LE(this._sendCounter & 0xFFFFFFFF, 0);
+    nonce.writeUInt32LE(Math.floor(this._sendCounter / 0x100000000), 4);
 
-    // chacha20poly1305 из @noble возвращает [ciphertext + 16-byte tag]
-    const cipher = chacha20poly1305(key, nonce);
-    const ct = cipher.encrypt(msg);
+    const key    = new Uint8Array(this.sharedKey);
+    const msg    = new TextEncoder().encode(text);
+    const cipher = chacha20poly1305(key, new Uint8Array(nonce));
+    const ct     = Buffer.from(cipher.encrypt(msg));
 
-    const sid = this.sessionID;
-    const pkt = Buffer.alloc(3 + 12 + ct.length);
-    pkt[0] = CMD.MSG;
-    pkt[1] = (sid >> 8) & 0xff;
-    pkt[2] = sid & 0xff;
-    nonce.copy(pkt, 3);
-    Buffer.from(ct).copy(pkt, 15);
-    this.socket.write(pkt);
+    // msgPayload = [Counter(8 LE)][Ciphertext(N+16)]
+    const msgPayload = Buffer.concat([nonce.slice(0, 8), ct]);
+
+    // Frame = 2 (len prefix) + 1 (cmd) + msgPayload.length
+    if (3 + msgPayload.length <= MAX_FRAME_SIZE) {
+      this.socket.write(this._buildFrame(CMD.MSG, msgPayload));
+      return true;
+    }
+
+    // Fragment: each fragment frame = 2 + 1 (cmd) + 3 (msgID, fragIdx, fragCount) + chunk
+    this._fragCounter = (this._fragCounter + 1) & 0xFF;
+    const msgID    = this._fragCounter;
+    const maxChunk = MAX_FRAME_SIZE - 6;
+    const chunks   = [];
+    let   offset   = 0;
+    while (offset < msgPayload.length) {
+      chunks.push(msgPayload.slice(offset, offset + maxChunk));
+      offset += maxChunk;
+    }
+    const fragCount = chunks.length;
+    chunks.forEach((chunk, idx) => {
+      const fp = Buffer.alloc(3 + chunk.length);
+      fp[0] = msgID;
+      fp[1] = idx;
+      fp[2] = fragCount;
+      chunk.copy(fp, 3);
+      this.socket.write(this._buildFrame(CMD.FRAGMENT, fp));
+    });
     return true;
   }
 
-  // --- Расшифровка входящего (ChaCha20-Poly1305 via @noble/ciphers) ---
+  // --- Расшифровка входящего ---
   _decrypt(ciphertext, nonce) {
     const key    = new Uint8Array(this.sharedKey);
     const nonceU = new Uint8Array(nonce);
@@ -220,121 +250,151 @@ class MessengerClient extends EventEmitter {
     return Buffer.from(cipher.decrypt(ctU));
   }
 
-  // --- Парсинг входящих данных ---
+  // --- Входящие данные ---
   _onData(chunk) {
     this._buf = Buffer.concat([this._buf, chunk]);
     this._parse();
   }
 
+  // --- Parse loop: process all complete frames in the buffer ---
   _parse() {
-    while (this._buf.length > 0) {
-      const cmd = this._buf[0];
+    while (this._buf.length >= 2) {
+      const frameLen = this._buf.readUInt16LE(0);
+      if (frameLen < 1 || this._buf.length < 2 + frameLen) return;
+      const cmd     = this._buf[2];
+      const payload = this._buf.slice(3, 2 + frameLen);
+      this._buf = this._buf.slice(2 + frameLen);
+      this._dispatchFrame(cmd, payload);
+    }
+  }
 
-      if (cmd === CMD.LOGIN_OK) {
-        if (this._buf.length < 3) return;
-        this.sessionID = (this._buf[1] << 8) | this._buf[2];
-        this._buf = this._buf.slice(3);
+  _dispatchFrame(cmd, payload) {
+    switch (cmd) {
+
+      case CMD.LOGIN_OK:
+        if (payload.length < 2) break;
+        this.sessionID = (payload[0] << 8) | payload[1];
         if (this._loginResolve && !this._loginHandled) {
           this._loginHandled = true;
           const r = this._loginResolve;
           this._loginResolve = null;
           r({ ok: true });
         }
-        continue;
-      }
+        break;
 
-      if (cmd === CMD.LOGIN_FAIL) {
-        this._buf = this._buf.slice(1);
+      case CMD.LOGIN_FAIL:
         if (this._loginResolve && !this._loginHandled) {
           this._loginHandled = true;
           const r = this._loginResolve;
           this._loginResolve = null;
           r({ ok: false, error: 'Invalid login or password' });
         }
-        continue;
-      }
+        break;
 
-      if (cmd === 0x00 || cmd === 0x01) {
-        // ответ на регистрацию
-        this._buf = this._buf.slice(1);
+      case 0x00: // register failure
         if (this._registerResolve) {
           const r = this._registerResolve;
           this._registerResolve = null;
-          r({ ok: cmd === 0x01 });
+          r({ ok: false });
         }
-        continue;
-      }
+        break;
 
-      if (cmd === CMD.ACK) {
-        this._buf = this._buf.slice(1);
-        continue;
-      }
+      // 0x01 = CMD.REGISTER is repurposed as register success response from server
+      case CMD.REGISTER:
+        if (this._registerResolve) {
+          const r = this._registerResolve;
+          this._registerResolve = null;
+          r({ ok: true });
+        }
+        break;
 
-      if (cmd === CMD.HISTORY_END) {
-        this._buf = this._buf.slice(1);
+      case CMD.ACK:
+        break;
+
+      case CMD.HISTORY_END:
         this.emit('history-end');
-        continue;
-      }
+        break;
 
-      if (cmd === CMD.HISTORY) {
-        if (this._buf.length < 5) return;
-        const senderLen = this._buf[1];
-        let off = 2 + senderLen;
-        if (this._buf.length < off + 1) return;
-        const sender = this._buf.slice(2, 2 + senderLen).toString();
-        const timeLen = this._buf[off]; off++;
-        if (this._buf.length < off + timeLen + 2) return;
-        const time = this._buf.slice(off, off + timeLen).toString(); off += timeLen;
-        const msgLen = (this._buf[off] << 8) | this._buf[off + 1]; off += 2;
-        if (this._buf.length < off + msgLen) return;
-        const text = this._buf.slice(off, off + msgLen).toString();
-        this._buf = this._buf.slice(off + msgLen);
+      case CMD.HISTORY: {
+        // Payload: [SenderLen(1)][Sender(N)][Timestamp(4 BE)][Content...]
+        if (payload.length < 6) break;
+        const senderLen = payload[0];
+        if (payload.length < 1 + senderLen + 4) break;
+        const sender = payload.slice(1, 1 + senderLen).toString();
+        const tsOff  = 1 + senderLen;
+        const ts     = payload.readUInt32BE(tsOff);
+        const text   = payload.slice(tsOff + 4).toString();
+        const time   = new Date(ts * 1000).toLocaleString([], {
+          year: 'numeric', month: '2-digit', day: '2-digit',
+          hour: '2-digit', minute: '2-digit'
+        });
         this.emit('history', { sender, text, time });
-        continue;
+        break;
       }
 
-      if (cmd === CMD.INCOMING) {
-        // Формат: [0x04][senderLen(1)][sender][nonce(12)][ctLen(2)][ciphertext]
-        if (this._buf.length < 4) return;
-        const senderLen = this._buf[1];
-        const minLen = 2 + senderLen + 12 + 2 + 1;
-        if (this._buf.length < minLen) return;
-        const sender = this._buf.slice(2, 2 + senderLen).toString();
-        const nonce  = this._buf.slice(2 + senderLen, 2 + senderLen + 12);
-        const ctLen  = (this._buf[2 + senderLen + 12] << 8) | this._buf[2 + senderLen + 13];
-        const off    = 2 + senderLen + 12 + 2;
-        if (this._buf.length < off + ctLen) return;
-        const ct = this._buf.slice(off, off + ctLen);
+      case CMD.INCOMING: {
+        // Payload: [SenderSID(2 BE)][Counter(8 LE)][Ciphertext(N+16)]
+        if (payload.length < 2 + 8 + 16) break;
+        const senderSID = (payload[0] << 8) | payload[1];
+        const nonce     = Buffer.alloc(12);
+        payload.copy(nonce, 0, 2, 10); // bytes 2-9 = counter (8 bytes)
+        // bytes 8-11 stay zero
+        const ct        = payload.slice(10);
         try {
-          const plain = this._decrypt(ct, nonce);
-          const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-          this.emit('message', sender, plain.toString(), now);
+          const plain      = this._decrypt(ct, nonce);
+          const senderName = this._sidNames.get(senderSID) || `SID:${senderSID}`;
+          const now        = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+          this.emit('message', senderName, plain.toString(), now);
         } catch (_) {}
-        this._buf = this._buf.slice(off + ctLen);
-        continue;
+        break;
       }
 
-      if (cmd === CMD.ONLINE_LIST) {
-        if (this._buf.length < 2) return;
-        const count = this._buf[1];
-        let off = 2;
-        const names = [];
-        let valid = true;
+      case CMD.ONLINE_LIST: {
+        // Payload: [Count(1)][SID(2 BE)][NameLen(1)][Name]...
+        if (payload.length < 1) break;
+        const count   = payload[0];
+        let   off     = 1;
+        const newMap  = new Map();
+        const names   = [];
+        let   valid   = true;
         for (let i = 0; i < count; i++) {
-          if (off >= this._buf.length) { valid = false; break; }
-          const nLen = this._buf[off]; off++;
-          if (off + nLen > this._buf.length) { valid = false; break; }
-          names.push(this._buf.slice(off, off + nLen).toString());
-          off += nLen;
+          if (off + 3 > payload.length) { valid = false; break; }
+          const sid  = (payload[off] << 8) | payload[off + 1]; off += 2;
+          const nLen = payload[off]; off++;
+          if (off + nLen > payload.length) { valid = false; break; }
+          const name = payload.slice(off, off + nLen).toString(); off += nLen;
+          newMap.set(sid, name);
+          names.push(name);
         }
-        if (!valid) return;
-        this._buf = this._buf.slice(off);
-        this.emit('online-list', names);
-        continue;
+        if (valid) {
+          this._sidNames = newMap;
+          this.emit('online-list', names);
+        }
+        break;
       }
 
-      // Неизвестный байт — пропускаем
-      this._buf = this._buf.slice(1);
+      case CMD.ONLINE_ADD: {
+        // Payload: [SID(2 BE)][NameLen(1)][Name]
+        if (payload.length < 4) break;
+        const sid  = (payload[0] << 8) | payload[1];
+        const nLen = payload[2];
+        if (3 + nLen > payload.length) break;
+        const name = payload.slice(3, 3 + nLen).toString();
+        this._sidNames.set(sid, name);
+        this.emit('online-list', [...this._sidNames.values()]);
+        break;
+      }
+
+      case CMD.ONLINE_REMOVE: {
+        // Payload: [SID(2 BE)]
+        if (payload.length < 2) break;
+        const sid = (payload[0] << 8) | payload[1];
+        this._sidNames.delete(sid);
+        this.emit('online-list', [...this._sidNames.values()]);
+        break;
+      }
+
+      // Unknown command — ignore (already consumed from buffer by _parse)
     }
   }
 

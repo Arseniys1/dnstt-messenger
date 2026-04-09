@@ -4,11 +4,13 @@ import (
 	"bufio"
 	"crypto/ecdh"
 	"crypto/rand"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"net"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/crypto/chacha20poly1305"
@@ -16,28 +18,36 @@ import (
 )
 
 type Config struct {
-	ProxyAddr  string `json:"proxy_addr"`
-	ServerAddr string `json:"server_addr"`
-	DirectMode bool   `json:"direct_mode"`
+	ProxyAddr    string `json:"proxy_addr"`
+	ServerAddr   string `json:"server_addr"`
+	DirectMode   bool   `json:"direct_mode"`
+	MaxFrameSize int    `json:"max_frame_size"`
 }
 
 var (
-	cfg       Config
-	sessionID uint16
-	conn      net.Conn
-	sharedKey []byte
+	cfg         Config
+	sessionID   uint16
+	conn        net.Conn
+	sharedKey   []byte
+	sendCounter atomic.Uint64
+	fragCounter atomic.Uint64
+	sidNames    = make(map[uint16]string) // SID → username (populated from CmdOnlineList/Add/Remove)
 )
 
 const (
-	CmdRegister   = 0x01
-	CmdLogin      = 0x02
-	CmdMsg        = 0x03
-	CmdIncoming   = 0x04
-	CmdHistory    = 0x05
-	CmdHistoryEnd = 0x07
-	CmdLoginOK    = 0x08
-	CmdLoginFail  = 0x09
-	CmdOnlineList = 0x0A
+	CmdRegister     = 0x01
+	CmdLogin        = 0x02
+	CmdMsg          = 0x03
+	CmdIncoming     = 0x04
+	CmdHistory      = 0x05
+	CmdAck          = 0x06
+	CmdHistoryEnd   = 0x07
+	CmdLoginOK      = 0x08
+	CmdLoginFail    = 0x09
+	CmdOnlineList   = 0x0A
+	CmdOnlineAdd    = 0x0B
+	CmdOnlineRemove = 0x0C
+	CmdFragment     = 0x0D
 )
 
 func main() {
@@ -63,7 +73,6 @@ func main() {
 	}
 	defer conn.Close()
 
-	// ECDH хендшейк — получаем общий ключ
 	sharedKey, err = ecdhHandshake(conn)
 	if err != nil {
 		fmt.Printf("❌ ECDH хендшейк не удался: %v\n", err)
@@ -148,45 +157,62 @@ func main() {
 	}
 }
 
-// ecdhHandshake выполняет X25519 хендшейк.
-// Сервер первым присылает свой публичный ключ (32 байта), клиент отвечает своим.
-func ecdhHandshake(conn net.Conn) ([]byte, error) {
-	curve := ecdh.X25519()
+// writeFrame sends [TotalLen(2 LE)][cmd(1)][payload...] to c.
+func writeFrame(c net.Conn, cmd byte, payload []byte) {
+	total := 1 + len(payload)
+	frame := make([]byte, 2+total)
+	binary.LittleEndian.PutUint16(frame[0:2], uint16(total))
+	frame[2] = cmd
+	copy(frame[3:], payload)
+	c.Write(frame)
+}
 
+// readOneFrame reads exactly one framed message (blocking until complete).
+// Returns [cmd(1)][payload...].
+func readOneFrame(c net.Conn) ([]byte, error) {
+	lenBuf := make([]byte, 2)
+	if _, err := readFull(c, lenBuf); err != nil {
+		return nil, err
+	}
+	frameLen := int(binary.LittleEndian.Uint16(lenBuf))
+	if frameLen < 1 {
+		return nil, fmt.Errorf("пустой фрейм")
+	}
+	frame := make([]byte, frameLen)
+	if _, err := readFull(c, frame); err != nil {
+		return nil, err
+	}
+	return frame, nil
+}
+
+func ecdhHandshake(c net.Conn) ([]byte, error) {
+	curve := ecdh.X25519()
 	privKey, err := curve.GenerateKey(rand.Reader)
 	if err != nil {
 		return nil, fmt.Errorf("генерация ключа: %w", err)
 	}
-
-	// Читаем публичный ключ сервера
 	serverPubBytes := make([]byte, 32)
-	if _, err = readFull(conn, serverPubBytes); err != nil {
+	if _, err = readFull(c, serverPubBytes); err != nil {
 		return nil, fmt.Errorf("чтение публичного ключа сервера: %w", err)
 	}
-
 	serverPub, err := curve.NewPublicKey(serverPubBytes)
 	if err != nil {
 		return nil, fmt.Errorf("парсинг публичного ключа сервера: %w", err)
 	}
-
-	// Отправляем свой публичный ключ
-	if _, err = conn.Write(privKey.PublicKey().Bytes()); err != nil {
+	if _, err = c.Write(privKey.PublicKey().Bytes()); err != nil {
 		return nil, fmt.Errorf("отправка публичного ключа: %w", err)
 	}
-
 	shared, err := privKey.ECDH(serverPub)
 	if err != nil {
 		return nil, fmt.Errorf("вычисление общего секрета: %w", err)
 	}
-
 	return shared, nil
 }
 
-// readFull читает ровно len(buf) байт.
-func readFull(conn net.Conn, buf []byte) (int, error) {
+func readFull(c net.Conn, buf []byte) (int, error) {
 	total := 0
 	for total < len(buf) {
-		n, err := conn.Read(buf[total:])
+		n, err := c.Read(buf[total:])
 		total += n
 		if err != nil {
 			return total, err
@@ -195,32 +221,32 @@ func readFull(conn net.Conn, buf []byte) (int, error) {
 	return total, nil
 }
 
-// --- СЕТЕВАЯ ЛОГИКА ---
-
 func register(login, pass string) (bool, error) {
 	if len(login) > 255 || len(pass) > 255 {
 		return false, fmt.Errorf("слишком длинные данные")
 	}
-	packet := []byte{CmdRegister, byte(len(login))}
-	packet = append(packet, []byte(login)...)
-	packet = append(packet, []byte(pass)...)
-	conn.Write(packet)
+	payload := []byte{byte(len(login))}
+	payload = append(payload, []byte(login)...)
+	payload = append(payload, []byte(pass)...)
+	writeFrame(conn, CmdRegister, payload)
 
-	res := make([]byte, 1)
 	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-	_, err := conn.Read(res)
+	frame, err := readOneFrame(conn)
 	conn.SetReadDeadline(time.Time{})
 	if err != nil {
 		return false, err
 	}
-	return res[0] == 0x01, nil
+	if len(frame) < 1 {
+		return false, fmt.Errorf("пустой ответ")
+	}
+	return frame[0] == 0x01, nil
 }
 
 func sendLoginPacket(login, pass string) {
-	packet := []byte{CmdLogin, byte(len(login))}
-	packet = append(packet, []byte(login)...)
-	packet = append(packet, []byte(pass)...)
-	conn.Write(packet)
+	payload := []byte{byte(len(login))}
+	payload = append(payload, []byte(login)...)
+	payload = append(payload, []byte(pass)...)
+	writeFrame(conn, CmdLogin, payload)
 }
 
 func sendMessage(text string) {
@@ -229,153 +255,211 @@ func sendMessage(text string) {
 		fmt.Println("❌ Ошибка ключа:", err)
 		return
 	}
-	nonce := make([]byte, aead.NonceSize())
-	rand.Read(nonce)
-	ciphertext := aead.Seal(nil, nonce, []byte(text), nil)
+	// Counter-based nonce: 8-byte LE counter + 4 zero bytes = 12 bytes
+	cnt := sendCounter.Add(1)
+	nonce := make([]byte, 12)
+	binary.LittleEndian.PutUint64(nonce[:8], cnt)
+	ct := aead.Seal(nil, nonce, []byte(text), nil)
 
-	packet := []byte{CmdMsg, byte(sessionID >> 8), byte(sessionID & 0xFF)}
-	packet = append(packet, nonce...)
-	packet = append(packet, ciphertext...)
+	// msgPayload = [Counter(8 LE)][Ciphertext(N+16)]
+	msgPayload := make([]byte, 8+len(ct))
+	copy(msgPayload[:8], nonce[:8])
+	copy(msgPayload[8:], ct)
 
-	if _, err = conn.Write(packet); err != nil {
-		fmt.Println("❌ Связь разорвана:", err)
-		os.Exit(1)
+	maxFrame := cfg.MaxFrameSize
+	if maxFrame < 20 {
+		maxFrame = 180
+	}
+
+	// Frame = 2 (length prefix) + 1 (cmd) + len(msgPayload)
+	if 3+len(msgPayload) <= maxFrame {
+		writeFrame(conn, CmdMsg, msgPayload)
+		return
+	}
+
+	// Message too large for one frame — fragment it.
+	// Each CmdFragment frame: 2 (len) + 1 (cmd) + 3 (msgID, fragIdx, fragCount) + chunk
+	msgID := byte(fragCounter.Add(1))
+	maxChunk := maxFrame - 6
+	if maxChunk < 1 {
+		maxChunk = 100
+	}
+
+	var chunks [][]byte
+	remaining := msgPayload
+	for len(remaining) > 0 {
+		end := maxChunk
+		if end > len(remaining) {
+			end = len(remaining)
+		}
+		chunks = append(chunks, remaining[:end])
+		remaining = remaining[end:]
+	}
+
+	fragCount := byte(len(chunks))
+	for i, chunk := range chunks {
+		fp := make([]byte, 3+len(chunk))
+		fp[0] = msgID
+		fp[1] = byte(i)
+		fp[2] = fragCount
+		copy(fp[3:], chunk)
+		writeFrame(conn, CmdFragment, fp)
 	}
 }
 
 func readLoop(loginDone chan bool, historyDone chan struct{}) {
-	buf := make([]byte, 4096)
+	// Accumulating buffer: handles TCP fragmentation common in DNS tunnels.
+	var pending []byte
+	tmp := make([]byte, 4096)
 	historyFinished := false
 	loginHandled := false
 
 	for {
-		n, err := conn.Read(buf)
+		n, err := conn.Read(tmp)
 		if err != nil {
 			fmt.Println("\n📡 Соединение закрыто сервером.")
 			os.Exit(0)
 		}
-		if n < 1 {
-			continue
-		}
+		pending = append(pending, tmp[:n]...)
 
-		data := buf[:n]
-		for len(data) > 0 {
-			cmd := data[0]
+		for {
+			if len(pending) < 2 {
+				break
+			}
+			frameLen := int(binary.LittleEndian.Uint16(pending[0:2]))
+			if frameLen < 1 || len(pending) < 2+frameLen {
+				break
+			}
+			cmd := pending[2]
+			payload := make([]byte, frameLen-1)
+			copy(payload, pending[3:2+frameLen])
+			pending = pending[2+frameLen:]
+
 			switch cmd {
 
 			case CmdLoginOK:
-				if len(data) < 3 {
-					data = nil
+				if len(payload) < 2 {
 					continue
 				}
-				sessionID = uint16(data[1])<<8 | uint16(data[2])
+				sessionID = uint16(payload[0])<<8 | uint16(payload[1])
 				if !loginHandled {
 					loginHandled = true
 					loginDone <- true
 				}
-				data = data[3:]
 
 			case CmdLoginFail:
 				if !loginHandled {
 					loginHandled = true
 					loginDone <- false
 				}
-				data = data[1:]
 
-			case 0x06:
-				data = data[1:]
+			case CmdAck:
+				// Message delivery acknowledgment — nothing to display.
 
 			case CmdHistory:
-				if len(data) < 5 {
-					data = nil
+				// Payload: [SenderLen(1)][Sender(N)][Timestamp(4 BE)][Content...]
+				// Content length is implicit (payload length minus fixed prefix).
+				if len(payload) < 6 {
 					continue
 				}
-				senderLen := int(data[1])
-				off := 2 + senderLen
-				if len(data) < off+1 {
-					data = nil
+				senderLen := int(payload[0])
+				if len(payload) < 1+senderLen+4 {
 					continue
 				}
-				sender := string(data[2:off])
-				timeLen := int(data[off])
-				off++
-				if len(data) < off+timeLen+2 {
-					data = nil
-					continue
-				}
-				timeStr := string(data[off : off+timeLen])
-				off += timeLen
-				msgLen := int(data[off])<<8 | int(data[off+1])
-				off += 2
-				if len(data) < off+msgLen {
-					data = nil
-					continue
-				}
-				text := string(data[off : off+msgLen])
-				fmt.Printf("  [%s] %s: %s\n", timeStr, sender, text)
-				data = data[off+msgLen:]
+				sender := string(payload[1 : 1+senderLen])
+				tsOff := 1 + senderLen
+				ts := uint32(payload[tsOff])<<24 | uint32(payload[tsOff+1])<<16 |
+					uint32(payload[tsOff+2])<<8 | uint32(payload[tsOff+3])
+				content := string(payload[tsOff+4:])
+				timeStr := time.Unix(int64(ts), 0).Local().Format("2006-01-02 15:04")
+				fmt.Printf("  [%s] %s: %s\n", timeStr, sender, content)
 
 			case CmdHistoryEnd:
 				if !historyFinished {
 					historyFinished = true
 					close(historyDone)
 				}
-				data = data[1:]
 
 			case CmdIncoming:
-				if len(data) < 4 {
-					data = nil
+				// Payload: [SenderSID(2 BE)][Counter(8 LE)][Ciphertext(N+16)]
+				if len(payload) < 2+8+16 {
 					continue
 				}
-				senderLen := int(data[1])
-				if len(data) < 2+senderLen+12+2 {
-					data = nil
-					continue
+				senderSID := uint16(payload[0])<<8 | uint16(payload[1])
+				nonce := make([]byte, 12)
+				copy(nonce[:8], payload[2:10])
+				ciphertext := payload[10:]
+				if plaintext, decErr := decryptMsg(ciphertext, nonce); decErr == nil {
+					senderName := sidNames[senderSID]
+					if senderName == "" {
+						senderName = fmt.Sprintf("SID:%d", senderSID)
+					}
+					fmt.Printf("\n📨 [%s]: %s\n>> ", senderName, string(plaintext))
 				}
-				sender := string(data[2 : 2+senderLen])
-				nonce := data[2+senderLen : 2+senderLen+12]
-				ctLen := int(data[2+senderLen+12])<<8 | int(data[2+senderLen+13])
-				off := 2 + senderLen + 12 + 2
-				if len(data) < off+ctLen {
-					data = nil
-					continue
-				}
-				ciphertext := data[off : off+ctLen]
-				if plaintext, err := decryptMsg(ciphertext, nonce); err == nil {
-					fmt.Printf("\n📨 [%s]: %s\n>> ", sender, string(plaintext))
-				}
-				data = data[off+ctLen:]
 
 			case CmdOnlineList:
-				if len(data) < 2 {
-					data = nil
+				// Payload: [Count(1)][SID(2 BE)][NameLen(1)][Name]...
+				if len(payload) < 1 {
 					continue
 				}
-				count := int(data[1])
-				off := 2
+				count := int(payload[0])
+				off := 1
+				newMap := make(map[uint16]string)
 				names := make([]string, 0, count)
 				valid := true
 				for i := 0; i < count; i++ {
-					if off >= len(data) {
+					if off+3 > len(payload) {
 						valid = false
 						break
 					}
-					nLen := int(data[off])
+					sid := uint16(payload[off])<<8 | uint16(payload[off+1])
+					off += 2
+					nLen := int(payload[off])
 					off++
-					if off+nLen > len(data) {
+					if off+nLen > len(payload) {
 						valid = false
 						break
 					}
-					names = append(names, string(data[off:off+nLen]))
+					name := string(payload[off : off+nLen])
 					off += nLen
+					newMap[sid] = name
+					names = append(names, name)
 				}
 				if valid {
+					sidNames = newMap
 					fmt.Printf("\n🟢 Онлайн (%d): %s\n>> ", len(names), strings.Join(names, ", "))
 				}
-				data = data[off:]
 
-			default:
-				data = data[1:]
+			case CmdOnlineAdd:
+				// Payload: [SID(2 BE)][NameLen(1)][Name]
+				if len(payload) < 4 {
+					continue
+				}
+				sid := uint16(payload[0])<<8 | uint16(payload[1])
+				nLen := int(payload[2])
+				if 3+nLen > len(payload) {
+					continue
+				}
+				name := string(payload[3 : 3+nLen])
+				sidNames[sid] = name
+				allNames := make([]string, 0, len(sidNames))
+				for _, n := range sidNames {
+					allNames = append(allNames, n)
+				}
+				fmt.Printf("\n🟢 Онлайн (%d): %s\n>> ", len(allNames), strings.Join(allNames, ", "))
+
+			case CmdOnlineRemove:
+				// Payload: [SID(2 BE)]
+				if len(payload) < 2 {
+					continue
+				}
+				sid := uint16(payload[0])<<8 | uint16(payload[1])
+				delete(sidNames, sid)
+				allNames := make([]string, 0, len(sidNames))
+				for _, n := range sidNames {
+					allNames = append(allNames, n)
+				}
+				fmt.Printf("\n🟢 Онлайн (%d): %s\n>> ", len(allNames), strings.Join(allNames, ", "))
 			}
 		}
 	}
@@ -391,9 +475,10 @@ func decryptMsg(ciphertext, nonce []byte) ([]byte, error) {
 
 func loadConfig(path string) {
 	cfg = Config{
-		ProxyAddr:  "127.0.0.1:8080",
-		ServerAddr: "127.0.0.1:9999",
-		DirectMode: false,
+		ProxyAddr:    "127.0.0.1:8080",
+		ServerAddr:   "127.0.0.1:9999",
+		DirectMode:   false,
+		MaxFrameSize: 180,
 	}
 	file, err := os.Open(path)
 	if err == nil {
