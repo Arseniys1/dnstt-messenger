@@ -136,7 +136,10 @@ class MessengerViewModel(app: Application) : AndroidViewModel(app) {
             // login() has its own 8s timeout internally
             val loginResult = svc.login(login, pass)
             if (loginResult.isFailure) {
-                setStatus("Неверный логин или пароль", error = true)
+                val msg = loginResult.exceptionOrNull()?.message ?: ""
+                val text = if (msg == "Invalid credentials") "Неверный логин или пароль"
+                           else "Ошибка входа: $msg"
+                setStatus(text, error = true)
                 return@launch
             }
 

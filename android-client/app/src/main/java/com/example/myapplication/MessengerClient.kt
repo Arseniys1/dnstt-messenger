@@ -3,6 +3,7 @@ package com.example.myapplication
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.onSubscription
 import org.bouncycastle.crypto.agreement.X25519Agreement
 import org.bouncycastle.crypto.generators.X25519KeyPairGenerator
 import org.bouncycastle.crypto.modes.ChaCha20Poly1305
@@ -90,6 +91,10 @@ class MessengerClient {
     // ---- Connect ----
     suspend fun connect(cfg: AppConfig): Result<Unit> = withContext(Dispatchers.IO) {
         try {
+            // Close any existing connection before opening a new one
+            try { socket?.close() } catch (_: Exception) {}
+            socket = null; din = null; output = null
+
             val (host, port) = parseAddr(cfg.serverAddr)
             val sock = Socket()
             sock.soTimeout = 15_000
@@ -135,27 +140,37 @@ class MessengerClient {
         val payload = byteArrayOf(lBytes.size.toByte()) + lBytes + pBytes
         return withContext(Dispatchers.IO) {
             try {
-                writeFrame(Cmd.LOGIN, payload)
-                val deferred = CompletableDeferred<Result<Int>>()
+                val deferred   = CompletableDeferred<Result<Int>>()
+                val subscribed = CompletableDeferred<Unit>()
+
                 val job = scope.launch {
-                    events.collect { event ->
-                        when (event) {
-                            is ServerEvent.LoginOk -> {
-                                deferred.complete(Result.success(sessionID))
-                                cancel()
+                    events
+                        .onSubscription { subscribed.complete(Unit) }
+                        .collect { event ->
+                            when (event) {
+                                is ServerEvent.LoginOk -> {
+                                    deferred.complete(Result.success(sessionID))
+                                    cancel()
+                                }
+                                is ServerEvent.LoginFail -> {
+                                    deferred.complete(Result.failure(Exception("Invalid credentials")))
+                                    cancel()
+                                }
+                                is ServerEvent.Disconnected -> {
+                                    deferred.complete(Result.failure(Exception("Disconnected")))
+                                    cancel()
+                                }
+                                else -> {}
                             }
-                            is ServerEvent.LoginFail -> {
-                                deferred.complete(Result.failure(Exception("Invalid credentials")))
-                                cancel()
-                            }
-                            is ServerEvent.Disconnected -> {
-                                deferred.complete(Result.failure(Exception("Disconnected")))
-                                cancel()
-                            }
-                            else -> {}
                         }
-                    }
                 }
+
+                // Wait until the collector is actually subscribed, THEN send the packet.
+                // Prevents the race where LoginOk arrives before anyone is listening
+                // and gets silently dropped by the SharedFlow.
+                subscribed.await()
+                writeFrame(Cmd.LOGIN, payload)
+
                 val result = withTimeoutOrNull(8000) { deferred.await() }
                     ?: Result.failure(Exception("Login timeout"))
                 job.cancel()
