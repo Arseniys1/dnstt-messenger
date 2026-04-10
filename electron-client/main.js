@@ -82,6 +82,9 @@ ipcMain.handle('connect', async (_, cfg) => {
     win.webContents.send('disconnected');
     client = null;
   });
+  client.on('server-list', (servers) => {
+    win.webContents.send('server-list', servers);
+  });
 
   return client.connect();
 });
@@ -104,4 +107,8 @@ ipcMain.handle('send-message', async (_, text) => {
 ipcMain.handle('disconnect', async () => {
   if (client) { client.destroy(); client = null; }
   return true;
+});
+
+ipcMain.handle('get-server-list', () => {
+  return client ? client._knownServers : [];
 });

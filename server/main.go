@@ -18,10 +18,15 @@ import (
 )
 
 type Config struct {
-	ListenAddr   string `json:"listen_addr"`
-	DBPath       string `json:"db_path"`
-	HistoryLimit int    `json:"history_limit"`
-	MaxFrameSize int    `json:"max_frame_size"`
+	ListenAddr        string   `json:"listen_addr"`
+	DBPath            string   `json:"db_path"`
+	HistoryLimit      int      `json:"history_limit"`
+	MaxFrameSize      int      `json:"max_frame_size"`
+	S2SAddr           string   `json:"s2s_addr"`            // server-to-server gossip listen addr
+	PublicAddr        string   `json:"public_addr"`         // client-facing external addr (empty = don't advertise)
+	GossipEnabled     bool     `json:"gossip_enabled"`      // default true
+	GossipIntervalSec int      `json:"gossip_interval_sec"` // default 60
+	InitialPeers      []string `json:"peers"`               // s2s addrs of seed servers
 }
 
 const (
@@ -38,6 +43,7 @@ const (
 	CmdOnlineAdd    = 0x0B
 	CmdOnlineRemove = 0x0C
 	CmdFragment     = 0x0D
+	CmdServerList   = 0x0E
 )
 
 // clientState holds all per-session state (replaces separate sessions/conns/keys maps).
@@ -76,6 +82,14 @@ func main() {
 	loadConfig("config.json")
 	initDB()
 	defer db.Close()
+
+	// Federation: load saved peers, seed from config, start S2S listener and gossip loop
+	loadPeers()
+	for _, addr := range cfg.InitialPeers {
+		peerStore.AddSeed(addr)
+	}
+	go startS2SListener()
+	go startGossipLoop()
 
 	ln, err := net.Listen("tcp", cfg.ListenAddr)
 	if err != nil {
@@ -287,7 +301,11 @@ func handleLogin(conn net.Conn, data []byte, sharedKey []byte) uint16 {
 		// 3. Send message history
 		sendHistory(conn)
 		writeFrame(conn, CmdHistoryEnd, nil)
-		// 4. Notify all existing clients about the new user (delta update)
+		// 4. Send list of known federated servers (if any)
+		if payload := buildServerListPayload(); payload != nil {
+			writeFrame(conn, CmdServerList, payload)
+		}
+		// 5. Notify all existing clients about the new user (delta update)
 		broadcastOnlineAdd(sid, login)
 
 		fmt.Printf("🔑 Вошел: %s (SID: %d)\n", login, sid)
@@ -559,10 +577,13 @@ func readFull(conn net.Conn, buf []byte) (int, error) {
 
 func loadConfig(path string) {
 	cfg = Config{
-		ListenAddr:   "0.0.0.0:9999",
-		DBPath:       "./messenger.db",
-		HistoryLimit: 50,
-		MaxFrameSize: 180,
+		ListenAddr:        "0.0.0.0:9999",
+		DBPath:            "./messenger.db",
+		HistoryLimit:      50,
+		MaxFrameSize:      180,
+		S2SAddr:           "0.0.0.0:9998",
+		GossipEnabled:     true,
+		GossipIntervalSec: 60,
 	}
 	f, err := os.Open(path)
 	if err != nil {

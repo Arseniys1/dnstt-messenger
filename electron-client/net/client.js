@@ -36,6 +36,7 @@ const CMD = {
   ONLINE_ADD:    0x0B,
   ONLINE_REMOVE: 0x0C,
   FRAGMENT:      0x0D,
+  SERVER_LIST:   0x0E,
 };
 
 const MAX_FRAME_SIZE = 180; // conservative limit for DNS tunnel MTU
@@ -54,6 +55,7 @@ class MessengerClient extends EventEmitter {
     this._sendCounter = 0;       // monotonic nonce counter (client→server)
     this._fragCounter = 0;       // fragment message ID counter
     this._sidNames = new Map();  // SID (number) → username string
+    this._knownServers = [];     // list of known federated server addresses
   }
 
   _parseAddr(addr) {
@@ -393,6 +395,24 @@ class MessengerClient extends EventEmitter {
         const sid = (payload[0] << 8) | payload[1];
         this._sidNames.delete(sid);
         this.emit('online-list', [...this._sidNames.values()]);
+        break;
+      }
+
+      case CMD.SERVER_LIST: {
+        // Payload: [Count(1)][AddrLen(1)][Addr(N)]...
+        if (payload.length < 1) break;
+        const count = payload[0];
+        let off = 1;
+        const servers = [];
+        for (let i = 0; i < count; i++) {
+          if (off >= payload.length) break;
+          const aLen = payload[off++];
+          if (off + aLen > payload.length) break;
+          servers.push(payload.slice(off, off + aLen).toString());
+          off += aLen;
+        }
+        this._knownServers = servers;
+        this.emit('server-list', servers);
         break;
       }
 

@@ -31,7 +31,8 @@ var (
 	sharedKey   []byte
 	sendCounter atomic.Uint64
 	fragCounter atomic.Uint64
-	sidNames    = make(map[uint16]string) // SID → username (populated from CmdOnlineList/Add/Remove)
+	sidNames     = make(map[uint16]string) // SID → username (populated from CmdOnlineList/Add/Remove)
+	knownServers []string                  // list of known federated server addresses
 )
 
 const (
@@ -48,6 +49,7 @@ const (
 	CmdOnlineAdd    = 0x0B
 	CmdOnlineRemove = 0x0C
 	CmdFragment     = 0x0D
+	CmdServerList   = 0x0E
 )
 
 func main() {
@@ -144,7 +146,7 @@ func main() {
 		break
 	}
 
-	fmt.Println("✅ Авторизация успешна! (/exit для выхода)")
+	fmt.Println("✅ Авторизация успешна! (/exit для выхода, /servers — список серверов сети)")
 
 	reader2 := bufio.NewReader(os.Stdin)
 	for {
@@ -153,6 +155,17 @@ func main() {
 		text = strings.TrimSpace(text)
 		if text == "/exit" {
 			break
+		}
+		if text == "/servers" {
+			if len(knownServers) == 0 {
+				fmt.Println("📡 Список серверов пуст.")
+			} else {
+				fmt.Printf("📡 Известные серверы (%d):\n", len(knownServers))
+				for i, s := range knownServers {
+					fmt.Printf("  %d. %s\n", i+1, s)
+				}
+			}
+			continue
 		}
 		if text == "" {
 			continue
@@ -465,6 +478,31 @@ func readLoop(loginDone chan bool, historyDone chan struct{}) {
 					allNames = append(allNames, n)
 				}
 				fmt.Printf("\n🟢 Онлайн (%d): %s\n>> ", len(allNames), strings.Join(allNames, ", "))
+
+			case CmdServerList:
+				// Payload: [Count(1)][AddrLen(1)][Addr(N)]...
+				if len(payload) < 1 {
+					continue
+				}
+				count := int(payload[0])
+				off := 1
+				servers := make([]string, 0, count)
+				for i := 0; i < count; i++ {
+					if off >= len(payload) {
+						break
+					}
+					aLen := int(payload[off])
+					off++
+					if off+aLen > len(payload) {
+						break
+					}
+					servers = append(servers, string(payload[off:off+aLen]))
+					off += aLen
+				}
+				knownServers = servers
+				if len(servers) > 0 {
+					fmt.Printf("\n📡 Серверы сети (%d): %s\n>> ", len(servers), strings.Join(servers, ", "))
+				}
 			}
 		}
 	}

@@ -94,9 +94,11 @@ async function doLogin() {
 
 // --- IPC listeners ---
 function registerListeners() {
-  ['message','online-list','history','history-end','disconnected'].forEach(ch =>
+  ['message','online-list','history','history-end','disconnected','server-list'].forEach(ch =>
     window.api.removeAllListeners(ch)
   );
+
+  window.api.onServerList(servers => renderKnownServers(servers));
 
   window.api.onHistory(msg => {
     appendMessage(msg.sender, msg.text, msg.time, msg.sender === myUsername);
@@ -200,6 +202,40 @@ msgInput.addEventListener('input', () => {
   msgInput.style.height = 'auto';
   msgInput.style.height = Math.min(msgInput.scrollHeight, 120) + 'px';
 });
+
+// --- Known servers list (federation) ---
+function renderKnownServers(servers) {
+  const container = document.getElementById('server-list-container');
+  if (!container) return;
+  container.innerHTML = '';
+  if (!servers || servers.length === 0) {
+    container.innerHTML = '<small>Список пуст</small>';
+    return;
+  }
+  servers.forEach(addr => {
+    const btn = document.createElement('button');
+    btn.className = 'btn-server';
+    btn.textContent = addr;
+    btn.title = 'Подключиться к ' + addr;
+    btn.addEventListener('click', async () => {
+      document.getElementById('cfg-server').value = addr;
+      document.getElementById('cfg-direct').checked = true;
+      const cfg = {
+        server_addr: addr,
+        proxy_addr:  document.getElementById('cfg-proxy').value.trim(),
+        direct_mode: true
+      };
+      await window.api.saveConfig(cfg);
+      // Switch to settings tab so user sees the update
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+      document.querySelector('.tab[data-tab="settings"]').classList.add('active');
+      document.getElementById('tab-settings').classList.add('active');
+      setStatus('Сервер выбран: ' + addr, 'ok');
+    });
+    container.appendChild(btn);
+  });
+}
 
 // --- Logout ---
 document.getElementById('btn-logout').addEventListener('click', async () => {

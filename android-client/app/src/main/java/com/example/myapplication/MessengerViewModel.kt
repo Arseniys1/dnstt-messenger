@@ -25,7 +25,8 @@ data class UiState(
     val messages: List<ChatMessage> = emptyList(),
     val onlineUsers: List<String> = emptyList(),
     val myUsername: String = "",
-    val config: AppConfig = AppConfig()
+    val config: AppConfig = AppConfig(),
+    val knownServers: List<String> = emptyList()
 )
 
 class MessengerViewModel(app: Application) : AndroidViewModel(app) {
@@ -125,7 +126,16 @@ class MessengerViewModel(app: Application) : AndroidViewModel(app) {
                 setStatus("Сервис не готов, попробуйте снова", error = true); return@launch
             }
 
-            setStatus("Подключение...", loading = true)
+            // Clear previous session state before connecting — avoids the race where
+            // OnlineList/History events arrive and are processed by handleEvent BEFORE
+            // the login-success block runs, causing them to be wiped by emptyList().
+            _state.value = _state.value.copy(
+                messages = emptyList(),
+                onlineUsers = emptyList(),
+                status = "Подключение...",
+                isLoading = true,
+                isError = false
+            )
             val connResult = withTimeoutOrNull(12_000) { svc.connect(_state.value.config) }
             if (connResult == null || connResult.isFailure) {
                 setStatus("Ошибка подключения: ${connResult?.exceptionOrNull()?.message ?: "таймаут"}", error = true)
@@ -147,8 +157,6 @@ class MessengerViewModel(app: Application) : AndroidViewModel(app) {
             _state.value = _state.value.copy(
                 screen = Screen.CHAT,
                 myUsername = login,
-                messages = emptyList(),
-                onlineUsers = emptyList(),
                 status = "",
                 isLoading = false,
                 isError = false
@@ -223,6 +231,9 @@ class MessengerViewModel(app: Application) : AndroidViewModel(app) {
                         onlineUsers = _state.value.onlineUsers.filter { it != event.name }
                     )
                 }
+            }
+            is ServerEvent.ServerList -> {
+                _state.value = _state.value.copy(knownServers = event.addrs)
             }
             is ServerEvent.Disconnected -> {
                 if (_state.value.screen == Screen.CHAT) {

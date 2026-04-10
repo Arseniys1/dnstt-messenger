@@ -211,6 +211,31 @@ fun LoginScreen(state: UiState, vm: MessengerViewModel) {
                         onClick = { vm.saveConfig(AppConfig(cfgServer, cfgProxy, cfgDirect)) },
                         modifier = Modifier.fillMaxWidth()
                     ) { Text("Сохранить") }
+
+                    // Known federated servers list
+                    if (state.knownServers.isNotEmpty()) {
+                        Spacer(Modifier.height(16.dp))
+                        Text(
+                            "Серверы сети (нажми чтобы выбрать)",
+                            fontSize = 13.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        state.knownServers.forEach { addr ->
+                            OutlinedButton(
+                                onClick = {
+                                    cfgServer = addr
+                                    cfgDirect = true
+                                    vm.saveConfig(AppConfig(addr, cfgProxy, true))
+                                },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 2.dp)
+                            ) {
+                                Text(addr, fontSize = 13.sp, maxLines = 1)
+                            }
+                        }
+                    }
                 }
             }
 

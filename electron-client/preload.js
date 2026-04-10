@@ -14,6 +14,8 @@ contextBridge.exposeInMainWorld('api', {
   onHistory: (cb) => ipcRenderer.on('history', (_, d) => cb(d)),
   onHistoryEnd: (cb) => ipcRenderer.on('history-end', () => cb()),
   onDisconnected: (cb) => ipcRenderer.on('disconnected', () => cb()),
+  onServerList: (cb) => ipcRenderer.on('server-list', (_, d) => cb(d)),
+  getServerList: () => ipcRenderer.invoke('get-server-list'),
 
   removeAllListeners: (ch) => ipcRenderer.removeAllListeners(ch)
 });

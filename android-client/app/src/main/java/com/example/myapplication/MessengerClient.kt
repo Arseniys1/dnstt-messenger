@@ -38,6 +38,7 @@ object Cmd {
     const val ONLINE_ADD    = 0x0B.toByte()
     const val ONLINE_REMOVE = 0x0C.toByte()
     const val FRAGMENT      = 0x0D.toByte()
+    const val SERVER_LIST   = 0x0E.toByte()
 }
 
 private const val MAX_FRAME_SIZE = 180 // conservative limit for DNS tunnel MTU
@@ -65,6 +66,7 @@ sealed class ServerEvent {
     object LoginOk : ServerEvent()
     object LoginFail : ServerEvent()
     object Disconnected : ServerEvent()
+    data class ServerList(val addrs: List<String>) : ServerEvent()
 }
 
 class MessengerClient {
@@ -253,6 +255,7 @@ class MessengerClient {
             Cmd.ONLINE_LIST -> parseOnlineList(payload)
             Cmd.ONLINE_ADD  -> parseOnlineAdd(payload)
             Cmd.ONLINE_REMOVE -> parseOnlineRemove(payload)
+            Cmd.SERVER_LIST -> parseServerList(payload)
             else -> null
         }
     }
@@ -343,6 +346,22 @@ class MessengerClient {
         val name = String(payload, 3, nLen)
         sidNames[sid] = name
         return ServerEvent.OnlineAdd(sid, name)
+    }
+
+    private fun parseServerList(payload: ByteArray): ServerEvent? {
+        // Payload: [Count(1)][AddrLen(1)][Addr(N)]...
+        if (payload.isEmpty()) return null
+        val count = payload[0].toInt() and 0xFF
+        var off = 1
+        val servers = mutableListOf<String>()
+        repeat(count) {
+            if (off >= payload.size) return@repeat
+            val aLen = payload[off++].toInt() and 0xFF
+            if (off + aLen > payload.size) return@repeat
+            servers += String(payload, off, aLen)
+            off += aLen
+        }
+        return ServerEvent.ServerList(servers)
     }
 
     private fun parseOnlineRemove(payload: ByteArray): ServerEvent? {

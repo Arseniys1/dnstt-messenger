@@ -283,3 +283,17 @@ label { font-size: 0.8rem; color: var(--muted); }
   transition: background .2s;
 }
 #btn-send:hover { background: var(--accent2); }
+
+/* Federation server list buttons */
+#server-list-container { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+.btn-server {
+  background: var(--surface2);
+  color: var(--accent2);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  padding: 4px 10px;
+  font-size: 0.78rem;
+  cursor: pointer;
+  transition: background .15s;
+}
+.btn-server:hover { background: var(--accent); color: #fff; }
