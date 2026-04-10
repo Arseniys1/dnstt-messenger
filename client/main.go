@@ -109,6 +109,10 @@ func main() {
 			fmt.Println("❌ Пароль не может быть пустым.")
 			continue
 		}
+		if len(login) > 255 || len(pass) > 255 {
+			fmt.Println("❌ Логин и пароль не должны превышать 255 символов.")
+			continue
+		}
 
 		if choice == "2" {
 			ok, regErr := register(login, pass)

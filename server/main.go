@@ -252,6 +252,7 @@ func handleLogin(conn net.Conn, data []byte, sharedKey []byte) uint16 {
 			sidCounter = 1 // skip 0 (reserved as "no session")
 		}
 		sid := sidCounter
+		startSID := sid
 		// Resolve collision: if all 65535 slots are taken this will loop, but
 		// that is an extreme edge case we handle gracefully by failing login.
 		for clients[sid] != nil {
@@ -260,7 +261,7 @@ func handleLogin(conn net.Conn, data []byte, sharedKey []byte) uint16 {
 				sidCounter = 1
 			}
 			sid = sidCounter
-			if sid == sidCounter-1 { // full wrap with no free slot
+			if sid == startSID { // full wrap — no free slot
 				sessMu.Unlock()
 				writeFrame(conn, CmdLoginFail, nil)
 				return 0
