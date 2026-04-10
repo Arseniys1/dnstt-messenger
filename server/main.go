@@ -12,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"golang.org/x/crypto/bcrypt"
 	"golang.org/x/crypto/chacha20poly1305"
 	_ "modernc.org/sqlite"
 )
@@ -220,7 +221,12 @@ func handleRegister(conn net.Conn, data []byte) {
 	login := string(data[1 : 1+lLen])
 	pass := string(data[1+lLen:])
 
-	_, err := db.Exec("INSERT INTO users (login, password) VALUES (?, ?)", login, pass)
+	hashed, err := bcrypt.GenerateFromPassword([]byte(pass), bcrypt.DefaultCost)
+	if err != nil {
+		writeFrame(conn, 0x00, nil)
+		return
+	}
+	_, err = db.Exec("INSERT INTO users (login, password) VALUES (?, ?)", login, string(hashed))
 	if err != nil {
 		writeFrame(conn, 0x00, nil)
 		return
@@ -242,10 +248,10 @@ func handleLogin(conn net.Conn, data []byte, sharedKey []byte) uint16 {
 	login := string(data[1 : 1+lLen])
 	pass := string(data[1+lLen:])
 
-	var storedPass string
-	err := db.QueryRow("SELECT password FROM users WHERE login = ?", login).Scan(&storedPass)
+	var storedHash string
+	err := db.QueryRow("SELECT password FROM users WHERE login = ?", login).Scan(&storedHash)
 
-	if err == nil && storedPass == pass {
+	if err == nil && bcrypt.CompareHashAndPassword([]byte(storedHash), []byte(pass)) == nil {
 		sessMu.Lock()
 		sidCounter++
 		if sidCounter == 0 {
@@ -436,6 +442,10 @@ func sendHistory(conn net.Conn) {
 		}
 		msgs = append(msgs, m)
 	}
+	if err := rows.Err(); err != nil {
+		fmt.Printf("⚠️ Ошибка чтения истории: %v\n", err)
+		return
+	}
 
 	// Reverse to chronological order
 	for i, j := 0, len(msgs)-1; i < j; i, j = i+1, j-1 {
@@ -517,7 +527,13 @@ func broadcastOnlineRemove(removedSID uint16) {
 	}
 }
 
+const maxMessageLen = 65536 // 64 KB
+
 func saveMessage(sender, content string) {
+	if len(content) > maxMessageLen {
+		fmt.Printf("⚠️ Сообщение от %s превышает лимит (%d байт)\n", sender, len(content))
+		return
+	}
 	db.Exec("INSERT INTO messages (sender, content) VALUES (?, ?)", sender, content)
 }
 
