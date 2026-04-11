@@ -344,6 +344,25 @@ func handleSetPublicKey(senderSID uint16, payload []byte) {
 		login, payload,
 	)
 	fmt.Printf("🔑 [E2E] Публичный ключ получен от %s\n", login)
+
+	// Broadcast the new pubkey to all other online clients so they can
+	// immediately flush any queued messages waiting for this user's key.
+	resp := make([]byte, 0, 1+len(login)+32)
+	resp = append(resp, byte(len(login)))
+	resp = append(resp, []byte(login)...)
+	resp = append(resp, payload...)
+
+	sessMu.RLock()
+	conns := make([]net.Conn, 0, len(clients))
+	for sid, cs := range clients {
+		if sid != senderSID {
+			conns = append(conns, cs.conn)
+		}
+	}
+	sessMu.RUnlock()
+	for _, c := range conns {
+		writeFrame(c, CmdPublicKey, resp)
+	}
 }
 
 // handlePublicKeyRequest responds with the public key of a requested user.

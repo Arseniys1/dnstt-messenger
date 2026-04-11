@@ -294,16 +294,18 @@ class MessengerClient {
             val privKey = e2ePrivKey
                 ?: return@withContext Result.failure(Exception("E2E key not initialized"))
 
-            // Collect recipients + detect missing pubkeys
+            // Collect recipients + detect missing pubkeys.
+            // Self is excluded from the missing check — we always have our own key.
             val recipients = mutableMapOf<String, ByteArray>()
             val missing    = mutableListOf<String>()
             for ((_, name) in sidNames) {
+                if (name == myLogin) continue // self handled below
                 val pk = knownPubkeys[name]
                 if (pk != null) recipients[name] = pk else missing += name
             }
-            // Add self
+            // Add self unconditionally
             if (myLogin.isNotEmpty()) {
-                val selfPk = knownPubkeys[myLogin] ?: e2ePubKey!!.encoded
+                val selfPk = e2ePubKey!!.encoded
                 recipients[myLogin] = selfPk
                 knownPubkeys[myLogin] = selfPk
             }
@@ -392,10 +394,11 @@ class MessengerClient {
             val recipients = mutableMapOf<String, ByteArray>()
             val missing    = mutableListOf<String>()
             for ((_, name) in sidNames) {
+                if (name == myLogin) continue // self handled below
                 val pk = knownPubkeys[name]
                 if (pk != null) recipients[name] = pk else missing += name
             }
-            if (myLogin.isNotEmpty()) recipients[myLogin] = knownPubkeys[myLogin] ?: e2ePubKey!!.encoded
+            if (myLogin.isNotEmpty()) recipients[myLogin] = e2ePubKey!!.encoded
             if (missing.isNotEmpty()) {
                 synchronized(pendingLock) { pendingMessages += text }
             } else {

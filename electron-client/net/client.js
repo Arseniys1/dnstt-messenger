@@ -315,17 +315,19 @@ class MessengerClient extends EventEmitter {
       return true;
     }
 
-    // Collect recipients + check for missing pubkeys
+    // Collect recipients + check for missing pubkeys.
+    // Self is excluded from the missing-key check — we always have our own key.
     const recipients = new Map();
     const missing = [];
     for (const [, name] of this._sidNames) {
+      if (name === this._myLogin) continue; // handled below
       if (this._knownPubkeys.has(name)) {
         recipients.set(name, this._knownPubkeys.get(name));
       } else {
         missing.push(name);
       }
     }
-    // Add self
+    // Add self unconditionally
     if (this._myLogin) {
       if (!this._knownPubkeys.has(this._myLogin)) {
         this._knownPubkeys.set(this._myLogin, Buffer.from(this._e2ePubKey));
@@ -412,6 +414,7 @@ class MessengerClient extends EventEmitter {
       const recipients = new Map();
       const missing = [];
       for (const [, name] of this._sidNames) {
+        if (name === this._myLogin) continue; // self handled below
         if (this._knownPubkeys.has(name)) recipients.set(name, this._knownPubkeys.get(name));
         else missing.push(name);
       }

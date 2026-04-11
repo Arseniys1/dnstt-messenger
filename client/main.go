@@ -324,13 +324,16 @@ func sendE2EMessage(text string) {
 	recipients := make(map[string][]byte)
 	var missing []string
 	for _, name := range sidNames {
+		if name == myLogin {
+			continue // self handled below; always available
+		}
 		if pk, ok := knownPubkeys[name]; ok {
 			recipients[name] = pk
 		} else {
 			missing = append(missing, name)
 		}
 	}
-	// Add self — always use our own pubkey directly (avoids write-under-RLock race)
+	// Add self unconditionally — we always have our own pubkey
 	if myLogin != "" {
 		if pk, ok := knownPubkeys[myLogin]; ok {
 			recipients[myLogin] = pk
@@ -468,6 +471,9 @@ func flushPendingMessages() {
 		recipients := make(map[string][]byte)
 		var missing []string
 		for _, name := range sidNames {
+			if name == myLogin {
+				continue // self handled below
+			}
 			if pk, ok := knownPubkeys[name]; ok {
 				recipients[name] = pk
 			} else {
