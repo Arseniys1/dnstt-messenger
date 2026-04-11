@@ -10,31 +10,30 @@ import (
 	"net"
 	"os"
 	"sync"
-	"sync/atomic"
 
+	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
-	"golang.org/x/crypto/chacha20poly1305"
 	_ "modernc.org/sqlite"
 )
 
 type Config struct {
-	ListenAddr        string   `json:"listen_addr"`
-	DBPath            string   `json:"db_path"`
-	HistoryLimit      int      `json:"history_limit"`
-	MaxFrameSize      int      `json:"max_frame_size"`
-	S2SAddr           string   `json:"s2s_addr"`            // server-to-server gossip listen addr
-	PublicAddr        string   `json:"public_addr"`         // client-facing external addr (empty = don't advertise)
-	GossipEnabled     bool     `json:"gossip_enabled"`      // default true
-	GossipIntervalSec int      `json:"gossip_interval_sec"` // default 60
-	InitialPeers      []string `json:"peers"`               // s2s addrs of seed servers
+	ListenAddr         string   `json:"listen_addr"`
+	DBPath             string   `json:"db_path"`
+	HistoryLimit       int      `json:"history_limit"`
+	MaxFrameSize       int      `json:"max_frame_size"`
+	S2SAddr            string   `json:"s2s_addr"`            // server-to-server gossip listen addr
+	PublicAddr         string   `json:"public_addr"`         // client-facing external addr
+	GossipEnabled      bool     `json:"gossip_enabled"`      // default true
+	GossipIntervalSec  int      `json:"gossip_interval_sec"` // default 60
+	InitialPeers       []string `json:"peers"`               // s2s addrs of seed servers
+	S2SSecret          string   `json:"s2s_secret"`          // HMAC secret for S2S relay auth
+	FederationSyncDays int      `json:"federation_sync_days"` // how many days back to sync (default 7)
 }
 
 const (
 	CmdRegister     = 0x01
 	CmdLogin        = 0x02
-	CmdMsg          = 0x03
-	CmdIncoming     = 0x04
-	CmdHistory      = 0x05
+	// 0x03-0x05 retired (plaintext CmdMsg/CmdIncoming/CmdHistory removed)
 	CmdAck          = 0x06
 	CmdHistoryEnd   = 0x07
 	CmdLoginOK      = 0x08
@@ -44,14 +43,20 @@ const (
 	CmdOnlineRemove = 0x0C
 	CmdFragment     = 0x0D
 	CmdServerList   = 0x0E
+	// E2E commands
+	CmdSetPublicKey     = 0x0F
+	CmdPublicKey        = 0x10
+	CmdPublicKeyRequest = 0x11
+	CmdE2EMsg           = 0x12
+	CmdE2EIncoming      = 0x13
+	CmdE2EHistory       = 0x14
 )
 
-// clientState holds all per-session state (replaces separate sessions/conns/keys maps).
+// clientState holds all per-session state.
 type clientState struct {
-	conn      net.Conn
-	key       []byte
-	login     string
-	sendNonce atomic.Uint64 // monotonic counter for server→client nonces
+	conn  net.Conn
+	key   []byte // session ECDH key (kept; used for login frame protection in future)
+	login string
 }
 
 // fragKey identifies a reassembly buffer by session + message ID.
@@ -108,14 +113,13 @@ func main() {
 }
 
 // writeFrame sends [TotalLen(2 LE)][cmd(1)][payload...] to conn.
-// TotalLen = 1 + len(payload).
 func writeFrame(conn net.Conn, cmd byte, payload []byte) {
 	total := 1 + len(payload)
 	frame := make([]byte, 2+total)
 	binary.LittleEndian.PutUint16(frame[0:2], uint16(total))
 	frame[2] = cmd
 	copy(frame[3:], payload)
-	conn.Write(frame)
+	conn.Write(frame) //nolint:errcheck
 }
 
 func ecdhHandshake(conn net.Conn) ([]byte, error) {
@@ -154,7 +158,6 @@ func handleConnection(conn net.Conn) {
 	fmt.Printf("🔐 ECDH хендшейк выполнен (%s)\n", conn.RemoteAddr())
 
 	var mySID uint16
-	var recvCounter uint64
 
 	defer func() {
 		if mySID != 0 {
@@ -176,7 +179,7 @@ func handleConnection(conn net.Conn) {
 	}()
 
 	// Accumulating buffer: parse complete frames even when TCP delivers partial data.
-	const maxPending = 65536 // 64 KB cap; disconnect client if exceeded
+	const maxPending = 65536
 	var pending []byte
 	tmp := make([]byte, 4096)
 
@@ -209,12 +212,20 @@ func handleConnection(conn net.Conn) {
 				handleRegister(conn, payload)
 			case CmdLogin:
 				mySID = handleLogin(conn, payload, sharedKey)
-			case CmdMsg:
-				handleMessage(mySID, payload, sharedKey, &recvCounter)
+			case CmdSetPublicKey:
+				if mySID != 0 {
+					handleSetPublicKey(mySID, payload)
+				}
+			case CmdPublicKeyRequest:
+				if mySID != 0 {
+					handlePublicKeyRequest(conn, payload)
+				}
 			case CmdFragment:
 				if mySID != 0 {
-					if reassembled := handleFragment(mySID, payload); reassembled != nil {
-						handleMessage(mySID, reassembled, sharedKey, &recvCounter)
+					if innerCmd, data := handleFragment(mySID, payload); data != nil {
+						if innerCmd == CmdE2EMsg {
+							handleE2EMessage(mySID, data)
+						}
 					}
 				}
 			}
@@ -269,19 +280,17 @@ func handleLogin(conn net.Conn, data []byte, sharedKey []byte) uint16 {
 		sessMu.Lock()
 		sidCounter++
 		if sidCounter == 0 {
-			sidCounter = 1 // skip 0 (reserved as "no session")
+			sidCounter = 1
 		}
 		sid := sidCounter
 		startSID := sid
-		// Resolve collision: if all 65535 slots are taken this will loop, but
-		// that is an extreme edge case we handle gracefully by failing login.
 		for clients[sid] != nil {
 			sidCounter++
 			if sidCounter == 0 {
 				sidCounter = 1
 			}
 			sid = sidCounter
-			if sid == startSID { // full wrap — no free slot
+			if sid == startSID {
 				sessMu.Unlock()
 				writeFrame(conn, CmdLoginFail, nil)
 				return 0
@@ -296,16 +305,16 @@ func handleLogin(conn net.Conn, data []byte, sharedKey []byte) uint16 {
 
 		// 1. Notify client of its SID
 		writeFrame(conn, CmdLoginOK, []byte{byte(sid >> 8), byte(sid & 0xFF)})
-		// 2. Send full online list (with SIDs) so client builds its sidNames map
+		// 2. Send full online list so client builds its sidNames map
 		sendOnlineListTo(conn)
-		// 3. Send message history
-		sendHistory(conn)
+		// 3. Send E2E message history for this user
+		sendE2EHistory(conn, login)
 		writeFrame(conn, CmdHistoryEnd, nil)
-		// 4. Send list of known federated servers (if any)
+		// 4. Send list of known federated servers
 		if payload := buildServerListPayload(); payload != nil {
 			writeFrame(conn, CmdServerList, payload)
 		}
-		// 5. Notify all existing clients about the new user (delta update)
+		// 5. Notify all existing clients about the new user
 		broadcastOnlineAdd(sid, login)
 
 		fmt.Printf("🔑 Вошел: %s (SID: %d)\n", login, sid)
@@ -315,48 +324,242 @@ func handleLogin(conn net.Conn, data []byte, sharedKey []byte) uint16 {
 	return 0
 }
 
-func handleMessage(senderSID uint16, data []byte, sharedKey []byte, recvCounter *uint64) {
-	// Payload: [Counter(8 LE)][Ciphertext(N+16)]
-	// Minimum: 8 bytes counter + 16 bytes auth tag = 24 bytes
-	if senderSID == 0 || len(data) < 24 {
+// handleSetPublicKey stores the client's long-term X25519 public key.
+// Payload: [pubkey(32)]
+func handleSetPublicKey(senderSID uint16, payload []byte) {
+	if len(payload) != 32 {
+		return
+	}
+	sessMu.RLock()
+	login := ""
+	if cs, ok := clients[senderSID]; ok {
+		login = cs.login
+	}
+	sessMu.RUnlock()
+	if login == "" {
+		return
+	}
+	db.Exec( //nolint:errcheck
+		"INSERT OR REPLACE INTO user_keys (login, pubkey, updated_at) VALUES (?, ?, strftime('%s','now'))",
+		login, payload,
+	)
+	fmt.Printf("🔑 [E2E] Публичный ключ получен от %s\n", login)
+}
+
+// handlePublicKeyRequest responds with the public key of a requested user.
+// Payload: [UsernameLen(1)][Username(N)]
+func handlePublicKeyRequest(conn net.Conn, payload []byte) {
+	if len(payload) < 1 {
+		return
+	}
+	lLen := int(payload[0])
+	if len(payload) < 1+lLen {
+		return
+	}
+	username := string(payload[1 : 1+lLen])
+
+	var pubkey []byte
+	err := db.QueryRow("SELECT pubkey FROM user_keys WHERE login = ?", username).Scan(&pubkey)
+	if err != nil || len(pubkey) != 32 {
 		return
 	}
 
-	cntVal := binary.LittleEndian.Uint64(data[0:8])
-	if cntVal <= *recvCounter {
-		fmt.Printf("⚠️ Повторное сообщение от SID %d (счётчик %d <= %d)\n", senderSID, cntVal, *recvCounter)
+	// CmdPublicKey: [UsernameLen(1)][Username(N)][pubkey(32)]
+	resp := make([]byte, 0, 1+len(username)+32)
+	resp = append(resp, byte(len(username)))
+	resp = append(resp, []byte(username)...)
+	resp = append(resp, pubkey...)
+	writeFrame(conn, CmdPublicKey, resp)
+}
+
+// handleE2EMessage processes a fully reassembled CmdE2EMsg payload.
+// Data format (after stripping the 0x12 cmd tag by handleFragment):
+//
+//	[Nonce(12)][EncContentLen(2 LE)][EncContent(N)][EnvelopeCount(1)]
+//	per envelope: [LoginLen(1)][Login(N)][Envelope(80)]
+//
+// Envelope = ephemeral_pub(32) + ChaCha20-Poly1305(ECDH(eph,recip),msgKey)(48)
+func handleE2EMessage(senderSID uint16, data []byte) {
+	if senderSID == 0 || len(data) < 12+2+1 {
 		return
 	}
-	*recvCounter = cntVal
 
-	// Nonce: 8-byte counter (LE) + 4 zero bytes = 12 bytes total
-	nonce := make([]byte, 12)
-	copy(nonce[:8], data[0:8])
-	ciphertext := data[8:]
+	nonce := data[:12]
+	encContentLen := int(binary.LittleEndian.Uint16(data[12:14]))
+	if len(data) < 14+encContentLen+1 {
+		return
+	}
+	encContent := data[14 : 14+encContentLen]
+
+	off := 14 + encContentLen
+	envelopeCount := int(data[off])
+	off++
+
+	envelopes := make(map[string][]byte) // login → 80-byte envelope
+	for i := 0; i < envelopeCount; i++ {
+		if off >= len(data) {
+			break
+		}
+		lLen := int(data[off])
+		off++
+		if off+lLen+80 > len(data) {
+			break
+		}
+		login := string(data[off : off+lLen])
+		off += lLen
+		env := make([]byte, 80)
+		copy(env, data[off:off+80])
+		off += 80
+		envelopes[login] = env
+	}
 
 	sessMu.RLock()
-	cs, ok := clients[senderSID]
+	senderLogin := ""
+	senderConn := net.Conn(nil)
+	if cs, ok := clients[senderSID]; ok {
+		senderLogin = cs.login
+		senderConn = cs.conn
+	}
 	sessMu.RUnlock()
-	if !ok {
+	if senderLogin == "" {
 		return
 	}
 
-	decrypted, err := decryptWith(sharedKey, ciphertext, nonce)
+	// storedBlob = nonce(12) + encContentLen(2 LE) + encContent
+	// All clients parse storedBlob[12:14] as the ciphertext length.
+	storedBlob := make([]byte, 12+2+len(encContent))
+	copy(storedBlob[:12], nonce)
+	binary.LittleEndian.PutUint16(storedBlob[12:14], uint16(len(encContent)))
+	copy(storedBlob[14:], encContent)
+
+	globalID := uuid.New().String()
+
+	// Persist message
+	result, err := db.Exec(
+		`INSERT INTO messages (sender, content, encrypted_content, global_id, origin_server, created_at)
+		 VALUES (?, '', ?, ?, ?, strftime('%s','now'))`,
+		senderLogin, storedBlob, globalID, cfg.PublicAddr,
+	)
+	if err != nil {
+		fmt.Printf("❌ Ошибка сохранения E2E сообщения: %v\n", err)
+		return
+	}
+	msgID, _ := result.LastInsertId()
+
+	// Persist per-user envelopes
+	for login, env := range envelopes {
+		db.Exec( //nolint:errcheck
+			"INSERT OR IGNORE INTO msg_keys (msg_id, login, key_envelope) VALUES (?, ?, ?)",
+			msgID, login, env,
+		)
+	}
+
+	fmt.Printf("📩 [E2E] %s: <зашифровано, %d байт>\n", senderLogin, len(encContent))
+
+	// Ack to sender
+	if senderConn != nil {
+		writeFrame(senderConn, CmdAck, nil)
+	}
+
+	// Broadcast to all online clients that have an envelope
+	broadcastE2EEncrypted(senderSID, msgID, storedBlob, envelopes)
+
+	// Relay to federated peers
+	go relayToAllPeers(globalID, senderLogin, storedBlob, envelopes, cfg.PublicAddr)
+}
+
+// broadcastE2EEncrypted sends CmdE2EIncoming to each online client that has an envelope.
+// CmdE2EIncoming payload: [SenderSID(2 BE)][MsgID(4 LE)][storedBlob(12+N)][Envelope(80)]
+func broadcastE2EEncrypted(senderSID uint16, msgID int64, storedBlob []byte, envelopes map[string][]byte) {
+	type target struct {
+		conn     net.Conn
+		login    string
+		envelope []byte
+	}
+
+	sessMu.RLock()
+	targets := make([]target, 0, len(clients))
+	for sid, cs := range clients {
+		if sid == senderSID {
+			continue
+		}
+		if env, ok := envelopes[cs.login]; ok {
+			targets = append(targets, target{conn: cs.conn, login: cs.login, envelope: env})
+		}
+	}
+	sessMu.RUnlock()
+
+	for _, t := range targets {
+		// payload: [SenderSID(2 BE)][MsgID(4 LE)][storedBlob][Envelope(80)]
+		payload := make([]byte, 2+4+len(storedBlob)+80)
+		payload[0] = byte(senderSID >> 8)
+		payload[1] = byte(senderSID & 0xFF)
+		binary.LittleEndian.PutUint32(payload[2:6], uint32(msgID))
+		copy(payload[6:], storedBlob)
+		copy(payload[6+len(storedBlob):], t.envelope)
+		writeFrame(t.conn, CmdE2EIncoming, payload)
+	}
+}
+
+// sendE2EHistory sends stored E2E messages for a given login.
+// CmdE2EHistory payload: [SenderLen(1)][Sender(N)][Timestamp(4 BE)][MsgID(4 LE)][storedBlob(12+N)][Envelope(80)]
+func sendE2EHistory(conn net.Conn, login string) {
+	limit := cfg.HistoryLimit
+	if limit <= 0 {
+		limit = 50
+	}
+
+	rows, err := db.Query(`
+		SELECT m.id, m.sender, m.encrypted_content, CAST(m.created_at AS INTEGER), mk.key_envelope
+		FROM messages m
+		JOIN msg_keys mk ON mk.msg_id = m.id
+		WHERE mk.login = ? AND m.encrypted_content IS NOT NULL
+		ORDER BY m.created_at ASC, m.id ASC
+		LIMIT ?
+	`, login, limit)
 	if err != nil {
 		return
 	}
+	defer rows.Close()
 
-	saveMessage(cs.login, string(decrypted))
-	fmt.Printf("📩 [%s]: %s\n", cs.login, string(decrypted))
-	writeFrame(cs.conn, CmdAck, nil)
+	for rows.Next() {
+		var (
+			msgID     int64
+			sender    string
+			blob      []byte
+			createdAt int64
+			envelope  []byte
+		)
+		if err := rows.Scan(&msgID, &sender, &blob, &createdAt, &envelope); err != nil {
+			continue
+		}
+		if len(blob) < 14 || len(envelope) != 80 {
+			continue
+		}
 
-	broadcastEncrypted(senderSID, decrypted)
+		ts := uint32(createdAt)
+		senderBytes := []byte(sender)
+
+		payload := make([]byte, 0, 1+len(senderBytes)+4+4+len(blob)+80)
+		payload = append(payload, byte(len(senderBytes)))
+		payload = append(payload, senderBytes...)
+		payload = append(payload, byte(ts>>24), byte(ts>>16), byte(ts>>8), byte(ts))
+		// MsgID (4 LE)
+		idBuf := make([]byte, 4)
+		binary.LittleEndian.PutUint32(idBuf, uint32(msgID))
+		payload = append(payload, idBuf...)
+		payload = append(payload, blob...)
+		payload = append(payload, envelope...)
+		writeFrame(conn, CmdE2EHistory, payload)
+	}
 }
 
-// handleFragment stores a fragment and returns the reassembled CmdMsg payload when all arrive.
-func handleFragment(senderSID uint16, data []byte) []byte {
+// handleFragment stores a fragment and returns (cmd, data) when all arrive.
+// The assembled bytes start with the cmd tag (byte 0), stripped before returning.
+// Returns (0, nil) if more fragments needed or on error.
+func handleFragment(senderSID uint16, data []byte) (byte, []byte) {
 	if len(data) < 4 {
-		return nil
+		return 0, nil
 	}
 	msgID := data[0]
 	fragIdx := data[1]
@@ -364,7 +567,7 @@ func handleFragment(senderSID uint16, data []byte) []byte {
 	chunk := data[3:]
 
 	if fragCount == 0 || fragIdx >= fragCount {
-		return nil
+		return 0, nil
 	}
 
 	key := fragKey{senderSID, msgID}
@@ -382,7 +585,7 @@ func handleFragment(senderSID uint16, data []byte) []byte {
 		fb.received++
 	}
 	if fb.received < fb.total {
-		return nil
+		return 0, nil
 	}
 
 	// All fragments received — reassemble in order
@@ -391,103 +594,15 @@ func handleFragment(senderSID uint16, data []byte) []byte {
 		assembled = append(assembled, fb.frags[i]...)
 	}
 	delete(fragMap, key)
-	return assembled
-}
 
-func broadcastEncrypted(senderSID uint16, plaintext []byte) {
-	// Collect targets inside the lock (increment nonce atomically), then write
-	// outside the lock so a slow/blocked socket can't stall new logins.
-	type target struct {
-		conn  net.Conn
-		key   []byte
-		cnt   uint64
+	if len(assembled) < 1 {
+		return 0, nil
 	}
-
-	sessMu.RLock()
-	targets := make([]target, 0, len(clients))
-	for sid, cs := range clients {
-		if sid == senderSID {
-			continue
-		}
-		targets = append(targets, target{conn: cs.conn, key: cs.key, cnt: cs.sendNonce.Add(1)})
-	}
-	sessMu.RUnlock()
-
-	for _, t := range targets {
-		aead, err := chacha20poly1305.New(t.key)
-		if err != nil {
-			continue
-		}
-		// Use per-client monotonic counter as nonce (unique per key, no random needed)
-		nonce := make([]byte, 12)
-		binary.LittleEndian.PutUint64(nonce[:8], t.cnt)
-		ct := aead.Seal(nil, nonce, plaintext, nil)
-
-		// CmdIncoming payload: [SenderSID(2 BE)][Counter(8 LE)][Ciphertext]
-		payload := make([]byte, 2+8+len(ct))
-		payload[0] = byte(senderSID >> 8)
-		payload[1] = byte(senderSID & 0xFF)
-		copy(payload[2:10], nonce[:8])
-		copy(payload[10:], ct)
-
-		writeFrame(t.conn, CmdIncoming, payload)
-	}
-}
-
-func sendHistory(conn net.Conn) {
-	limit := cfg.HistoryLimit
-	if limit <= 0 {
-		limit = 50
-	}
-
-	rows, err := db.Query(
-		`SELECT sender, content, CAST(created_at AS INTEGER) FROM messages ORDER BY id DESC LIMIT ?`, limit,
-	)
-	if err != nil {
-		return
-	}
-	defer rows.Close()
-
-	type msgRow struct {
-		sender, content string
-		createdAt       int64
-	}
-	var msgs []msgRow
-	for rows.Next() {
-		var m msgRow
-		if err := rows.Scan(&m.sender, &m.content, &m.createdAt); err != nil {
-			continue
-		}
-		msgs = append(msgs, m)
-	}
-	if err := rows.Err(); err != nil {
-		fmt.Printf("⚠️ Ошибка чтения истории: %v\n", err)
-		return
-	}
-
-	// Reverse to chronological order
-	for i, j := 0, len(msgs)-1; i < j; i, j = i+1, j-1 {
-		msgs[i], msgs[j] = msgs[j], msgs[i]
-	}
-
-	for _, m := range msgs {
-		ts := uint32(m.createdAt)
-		senderBytes := []byte(m.sender)
-		contentBytes := []byte(m.content)
-
-		// CmdHistory payload: [SenderLen(1)][Sender(N)][Timestamp(4 BE)][Content...]
-		// Content length is implicit from frame length (saves 2 bytes vs explicit MsgLen).
-		payload := make([]byte, 0, 1+len(senderBytes)+4+len(contentBytes))
-		payload = append(payload, byte(len(senderBytes)))
-		payload = append(payload, senderBytes...)
-		payload = append(payload, byte(ts>>24), byte(ts>>16), byte(ts>>8), byte(ts))
-		payload = append(payload, contentBytes...)
-		writeFrame(conn, CmdHistory, payload)
-	}
+	// assembled[0] = command tag; assembled[1:] = actual payload
+	return assembled[0], assembled[1:]
 }
 
 // buildOnlinePacket builds [Count(1)][SID(2 BE)][NameLen(1)][Name]...
-// Includes SIDs so clients can build a SID→name map for CmdIncoming resolution.
 func buildOnlinePacket() []byte {
 	sessMu.RLock()
 	defer sessMu.RUnlock()
@@ -505,8 +620,6 @@ func sendOnlineListTo(conn net.Conn) {
 	writeFrame(conn, CmdOnlineList, buildOnlinePacket())
 }
 
-// broadcastOnlineAdd sends CmdOnlineAdd to all existing sessions except newSID.
-// Called after the new client is already in the clients map.
 func broadcastOnlineAdd(newSID uint16, name string) {
 	nameBytes := []byte(name)
 	payload := make([]byte, 0, 3+len(nameBytes))
@@ -528,8 +641,6 @@ func broadcastOnlineAdd(newSID uint16, name string) {
 	}
 }
 
-// broadcastOnlineRemove sends CmdOnlineRemove to all remaining sessions.
-// Called after the disconnected client is already removed from the clients map.
 func broadcastOnlineRemove(removedSID uint16) {
 	payload := []byte{byte(removedSID >> 8), byte(removedSID & 0xFF)}
 
@@ -543,24 +654,6 @@ func broadcastOnlineRemove(removedSID uint16) {
 	for _, c := range conns {
 		writeFrame(c, CmdOnlineRemove, payload)
 	}
-}
-
-const maxMessageLen = 65536 // 64 KB
-
-func saveMessage(sender, content string) {
-	if len(content) > maxMessageLen {
-		fmt.Printf("⚠️ Сообщение от %s превышает лимит (%d байт)\n", sender, len(content))
-		return
-	}
-	db.Exec("INSERT INTO messages (sender, content) VALUES (?, ?)", sender, content)
-}
-
-func decryptWith(key, data, nonce []byte) ([]byte, error) {
-	aead, err := chacha20poly1305.New(key)
-	if err != nil {
-		return nil, err
-	}
-	return aead.Open(nil, nonce, data, nil)
 }
 
 func readFull(conn net.Conn, buf []byte) (int, error) {
@@ -577,13 +670,14 @@ func readFull(conn net.Conn, buf []byte) (int, error) {
 
 func loadConfig(path string) {
 	cfg = Config{
-		ListenAddr:        "0.0.0.0:9999",
-		DBPath:            "./messenger.db",
-		HistoryLimit:      50,
-		MaxFrameSize:      180,
-		S2SAddr:           "0.0.0.0:9998",
-		GossipEnabled:     true,
-		GossipIntervalSec: 60,
+		ListenAddr:         "0.0.0.0:9999",
+		DBPath:             "./messenger.db",
+		HistoryLimit:       50,
+		MaxFrameSize:       180,
+		S2SAddr:            "0.0.0.0:9998",
+		GossipEnabled:      true,
+		GossipIntervalSec:  60,
+		FederationSyncDays: 7,
 	}
 	f, err := os.Open(path)
 	if err != nil {
@@ -591,7 +685,7 @@ func loadConfig(path string) {
 		return
 	}
 	defer f.Close()
-	json.NewDecoder(f).Decode(&cfg)
+	json.NewDecoder(f).Decode(&cfg) //nolint:errcheck
 }
 
 func initDB() {
@@ -600,17 +694,63 @@ func initDB() {
 	if err != nil {
 		panic(err)
 	}
+
 	db.Exec(`CREATE TABLE IF NOT EXISTS users (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		login TEXT UNIQUE,
 		password TEXT
-	);`)
+	);`) //nolint:errcheck
+
 	db.Exec(`CREATE TABLE IF NOT EXISTS messages (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		sender TEXT NOT NULL,
-		content TEXT NOT NULL,
+		content TEXT NOT NULL DEFAULT '',
 		created_at INTEGER DEFAULT (strftime('%s','now'))
-	);`)
-	// Migrate old TEXT timestamps ("YYYY-MM-DD HH:MM:SS") to INTEGER unix timestamps.
-	db.Exec(`UPDATE messages SET created_at = CAST(strftime('%s', created_at) AS INTEGER) WHERE typeof(created_at) = 'text'`)
+	);`) //nolint:errcheck
+
+	// E2E: per-user long-term public keys
+	db.Exec(`CREATE TABLE IF NOT EXISTS user_keys (
+		login      TEXT PRIMARY KEY,
+		pubkey     BLOB NOT NULL,
+		updated_at INTEGER DEFAULT (strftime('%s','now'))
+	);`) //nolint:errcheck
+
+	// E2E: per-message per-user key envelopes
+	db.Exec(`CREATE TABLE IF NOT EXISTS msg_keys (
+		msg_id       INTEGER NOT NULL,
+		login        TEXT NOT NULL,
+		key_envelope BLOB NOT NULL,
+		PRIMARY KEY (msg_id, login)
+	);`) //nolint:errcheck
+
+	// Migrate: add columns if missing (SQLite has no IF NOT EXISTS on ALTER TABLE)
+	migrateColumn("messages", "encrypted_content", "BLOB")
+	migrateColumn("messages", "global_id", "TEXT")
+	migrateColumn("messages", "origin_server", "TEXT")
+
+	// Index for deduplication in federation
+	db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_global_id
+		ON messages(global_id) WHERE global_id IS NOT NULL AND global_id != ''`) //nolint:errcheck
+
+	// Migrate old TEXT timestamps to INTEGER
+	db.Exec(`UPDATE messages SET created_at = CAST(strftime('%s', created_at) AS INTEGER)
+		WHERE typeof(created_at) = 'text'`) //nolint:errcheck
+}
+
+// migrateColumn adds a column to a table if it does not already exist.
+func migrateColumn(table, column, colType string) {
+	rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, ctype, notnull, dfltVal, pk string
+		rows.Scan(&cid, &name, &ctype, &notnull, &dfltVal, &pk) //nolint:errcheck
+		if name == column {
+			return
+		}
+	}
+	db.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, colType)) //nolint:errcheck
 }

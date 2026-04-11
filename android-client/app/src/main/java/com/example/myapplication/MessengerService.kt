@@ -1,6 +1,7 @@
 package com.example.myapplication
 
 import android.app.Service
+import android.content.Context
 import android.content.Intent
 import android.os.Binder
 import android.os.IBinder
@@ -46,7 +47,10 @@ class MessengerService : Service() {
 
     // ---- API ----
 
-    suspend fun connect(cfg: AppConfig): Result<Unit> = client.connect(cfg)
+    suspend fun connect(cfg: AppConfig): Result<Unit> {
+        val prefs = getSharedPreferences("messenger", Context.MODE_PRIVATE)
+        return client.connect(cfg, prefs)
+    }
 
     suspend fun register(login: String, pass: String) = client.register(login, pass)
 
