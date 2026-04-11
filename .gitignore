@@ -1,3 +1,5 @@
 /.idea
 /client.exe
 /server.exe
+client/e2e_key.json
+*.db
