@@ -309,6 +309,8 @@ func handleLogin(conn net.Conn, data []byte, sharedKey []byte) uint16 {
 		sendOnlineListTo(conn)
 		// 3. Send E2E message history for this user
 		sendE2EHistory(conn, login)
+		// 3b. Send all known user public keys (including federated users)
+		sendAllUserKeys(conn)
 		writeFrame(conn, CmdHistoryEnd, nil)
 		// 4. Send list of known federated servers
 		if payload := buildServerListPayload(); payload != nil {
@@ -344,6 +346,9 @@ func handleSetPublicKey(senderSID uint16, payload []byte) {
 		login, payload,
 	)
 	fmt.Printf("🔑 [E2E] Публичный ключ получен от %s\n", login)
+
+	// Relay pubkey to all federated peers so cross-server messaging works
+	go relayUserKeyToAllPeers(login, payload)
 
 	// Broadcast the new pubkey to all other online clients so they can
 	// immediately flush any queued messages waiting for this user's key.
@@ -481,18 +486,17 @@ func handleE2EMessage(senderSID uint16, data []byte) {
 	}
 
 	// Broadcast to all online clients that have an envelope
-	broadcastE2EEncrypted(senderSID, msgID, storedBlob, envelopes)
+	broadcastE2EEncrypted(senderSID, senderLogin, msgID, storedBlob, envelopes)
 
 	// Relay to federated peers
 	go relayToAllPeers(globalID, senderLogin, storedBlob, envelopes, cfg.PublicAddr)
 }
 
 // broadcastE2EEncrypted sends CmdE2EIncoming to each online client that has an envelope.
-// CmdE2EIncoming payload: [SenderSID(2 BE)][MsgID(4 LE)][storedBlob(12+N)][Envelope(80)]
-func broadcastE2EEncrypted(senderSID uint16, msgID int64, storedBlob []byte, envelopes map[string][]byte) {
+// CmdE2EIncoming payload: [SenderLen(1)][Sender(N)][MsgID(4 LE)][storedBlob(12+N)][Envelope(80)]
+func broadcastE2EEncrypted(senderSID uint16, senderLogin string, msgID int64, storedBlob []byte, envelopes map[string][]byte) {
 	type target struct {
 		conn     net.Conn
-		login    string
 		envelope []byte
 	}
 
@@ -500,22 +504,25 @@ func broadcastE2EEncrypted(senderSID uint16, msgID int64, storedBlob []byte, env
 	targets := make([]target, 0, len(clients))
 	for sid, cs := range clients {
 		if sid == senderSID {
-			continue
+			continue // skip sender (senderSID=0 for federated — no one skipped)
 		}
 		if env, ok := envelopes[cs.login]; ok {
-			targets = append(targets, target{conn: cs.conn, login: cs.login, envelope: env})
+			targets = append(targets, target{conn: cs.conn, envelope: env})
 		}
 	}
 	sessMu.RUnlock()
 
+	senderBytes := []byte(senderLogin)
+	idBuf := make([]byte, 4)
+	binary.LittleEndian.PutUint32(idBuf, uint32(msgID))
 	for _, t := range targets {
-		// payload: [SenderSID(2 BE)][MsgID(4 LE)][storedBlob][Envelope(80)]
-		payload := make([]byte, 2+4+len(storedBlob)+80)
-		payload[0] = byte(senderSID >> 8)
-		payload[1] = byte(senderSID & 0xFF)
-		binary.LittleEndian.PutUint32(payload[2:6], uint32(msgID))
-		copy(payload[6:], storedBlob)
-		copy(payload[6+len(storedBlob):], t.envelope)
+		// payload: [SenderLen(1)][Sender(N)][MsgID(4 LE)][storedBlob][Envelope(80)]
+		payload := make([]byte, 0, 1+len(senderBytes)+4+len(storedBlob)+80)
+		payload = append(payload, byte(len(senderBytes)))
+		payload = append(payload, senderBytes...)
+		payload = append(payload, idBuf...)
+		payload = append(payload, storedBlob...)
+		payload = append(payload, t.envelope...)
 		writeFrame(t.conn, CmdE2EIncoming, payload)
 	}
 }
@@ -570,6 +577,28 @@ func sendE2EHistory(conn net.Conn, login string) {
 		payload = append(payload, blob...)
 		payload = append(payload, envelope...)
 		writeFrame(conn, CmdE2EHistory, payload)
+	}
+}
+
+// sendAllUserKeys sends CmdPublicKey frames for every known user key to the given connection.
+// This allows clients to encrypt for federated users they've never seen online.
+func sendAllUserKeys(conn net.Conn) {
+	rows, err := db.Query("SELECT login, pubkey FROM user_keys")
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var login string
+		var pubkey []byte
+		if err := rows.Scan(&login, &pubkey); err != nil || len(pubkey) != 32 {
+			continue
+		}
+		resp := make([]byte, 0, 1+len(login)+32)
+		resp = append(resp, byte(len(login)))
+		resp = append(resp, []byte(login)...)
+		resp = append(resp, pubkey...)
+		writeFrame(conn, CmdPublicKey, resp)
 	}
 }
 

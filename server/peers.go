@@ -193,6 +193,9 @@ type s2sMsg struct {
 	Since int64 `json:"since,omitempty"`
 	// sync_response
 	Messages []relayMsgPayload `json:"messages,omitempty"`
+	// user_key
+	Login  string `json:"login,omitempty"`
+	Pubkey []byte `json:"pubkey,omitempty"`
 }
 
 // relayMsgPayload is a single message inside a sync_response batch.
@@ -322,7 +325,52 @@ func handleS2SConnection(conn net.Conn) {
 			handleRelayMsg(msg, sourcePeerS2SAddr)
 		case "sync_request":
 			handleSyncRequest(conn, msg)
+		case "user_key":
+			handleS2SUserKey(msg)
 		}
+	}
+}
+
+// handleS2SUserKey stores a public key received from a federated peer
+// and pushes it to all currently online local clients.
+func handleS2SUserKey(msg s2sMsg) {
+	if msg.Login == "" || len(msg.Pubkey) != 32 {
+		return
+	}
+	db.Exec( //nolint:errcheck
+		"INSERT OR REPLACE INTO user_keys (login, pubkey, updated_at) VALUES (?, ?, strftime('%s','now'))",
+		msg.Login, msg.Pubkey,
+	)
+	fmt.Printf("🔑 [S2S] pubkey synced for %s — pushing to online clients\n", msg.Login)
+
+	// Push to all locally-online clients so they can immediately encrypt for this user
+	resp := make([]byte, 0, 1+len(msg.Login)+32)
+	resp = append(resp, byte(len(msg.Login)))
+	resp = append(resp, []byte(msg.Login)...)
+	resp = append(resp, msg.Pubkey...)
+
+	sessMu.RLock()
+	conns := make([]net.Conn, 0, len(clients))
+	for _, cs := range clients {
+		conns = append(conns, cs.conn)
+	}
+	sessMu.RUnlock()
+	for _, c := range conns {
+		writeFrame(c, CmdPublicKey, resp)
+	}
+}
+
+// relayUserKeyToAllPeers broadcasts a user's public key to all federated peers.
+func relayUserKeyToAllPeers(login string, pubkey []byte) {
+	addrs := peerStore.S2SAddrs()
+	if len(addrs) == 0 {
+		fmt.Printf("🔑 [S2S] No peers to relay pubkey for %s\n", login)
+		return
+	}
+	fmt.Printf("🔑 [S2S] Relaying pubkey for %s to %d peer(s): %v\n", login, len(addrs), addrs)
+	msg := s2sMsg{Type: "user_key", Login: login, Pubkey: pubkey}
+	for _, addr := range addrs {
+		go dialRelay(addr, msg)
 	}
 }
 
@@ -355,8 +403,11 @@ func computeRelayAuth(globalID string, timestamp int64) string {
 // handleRelayMsg stores an incoming relay message and forwards it to other peers.
 func handleRelayMsg(msg s2sMsg, sourcePeerS2SAddr string) {
 	if msg.GlobalID == "" || len(msg.StoredBlob) == 0 {
+		fmt.Printf("⚠️  [S2S] relay_msg ignored: empty global_id or blob (from %s)\n", sourcePeerS2SAddr)
 		return
 	}
+	fmt.Printf("📨 [S2S] relay_msg received: global_id=%s sender=%s envelopes=%d\n",
+		msg.GlobalID[:8], msg.Sender, len(msg.Envelopes))
 	// Verify HMAC if a shared secret is configured
 	if cfg.S2SSecret != "" {
 		expected := computeRelayAuth(msg.GlobalID, msg.Timestamp)
@@ -393,7 +444,7 @@ func handleRelayMsg(msg s2sMsg, sourcePeerS2SAddr string) {
 	}
 
 	// Deliver to locally-connected clients
-	broadcastE2EEncrypted(0, msgID, msg.StoredBlob, msg.Envelopes)
+	broadcastE2EEncrypted(0, msg.Sender, msgID, msg.StoredBlob, msg.Envelopes)
 
 	shortID := msg.GlobalID
 	if len(shortID) > 8 {
@@ -478,6 +529,24 @@ func handleSyncRequest(conn net.Conn, msg s2sMsg) {
 	if len(batch) > 0 {
 		sendSyncResponse(conn, batch)
 	}
+
+	// Send all known user public keys before the terminal signal
+	ukRows, err2 := db.Query("SELECT login, pubkey FROM user_keys")
+	if err2 == nil {
+		for ukRows.Next() {
+			var login string
+			var pubkey []byte
+			if ukRows.Scan(&login, &pubkey) != nil || len(pubkey) != 32 {
+				continue
+			}
+			ukData, merr := json.Marshal(s2sMsg{Type: "user_key", Login: login, Pubkey: pubkey})
+			if merr == nil {
+				conn.Write(append(ukData, '\n')) //nolint:errcheck
+			}
+		}
+		ukRows.Close()
+	}
+
 	// Send empty batch to signal end of sync (so the reader doesn't wait for a timeout)
 	sendSyncResponse(conn, []relayMsgPayload{})
 }
@@ -517,16 +586,17 @@ func processSyncedMessage(m relayMsgPayload) {
 			msgID, login, env,
 		)
 	}
-	broadcastE2EEncrypted(0, msgID, m.StoredBlob, m.Envelopes)
+	broadcastE2EEncrypted(0, m.Sender, msgID, m.StoredBlob, m.Envelopes)
 }
 
 // dialRelay connects to a peer, performs gossip handshake, then sends a relay message.
 func dialRelay(s2sAddr string, msg s2sMsg) {
 	conn, err := net.DialTimeout("tcp", s2sAddr, 5*time.Second)
 	if err != nil {
-		fmt.Printf("⚠️  Relay: can't reach %s: %v\n", s2sAddr, err)
+		fmt.Printf("⚠️  [S2S] dialRelay: can't reach %s: %v\n", s2sAddr, err)
 		return
 	}
+	fmt.Printf("🔗 [S2S] dialRelay: connected to %s, sending type=%s\n", s2sAddr, msg.Type)
 	defer conn.Close()
 	conn.SetDeadline(time.Now().Add(10 * time.Second)) //nolint:errcheck
 
@@ -561,13 +631,16 @@ func startGossipLoop() {
 	if interval < 10*time.Second {
 		interval = 10 * time.Second
 	}
+	fmt.Printf("🔄 Gossip loop started (interval=%s), seeds: %v\n", interval, peerStore.S2SAddrs())
 	for _, addr := range peerStore.S2SAddrs() {
 		go dialGossip(addr)
 	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for range ticker.C {
-		for _, addr := range peerStore.S2SAddrs() {
+		addrs := peerStore.S2SAddrs()
+		fmt.Printf("🔄 Gossip tick — dialing %d peer(s): %v\n", len(addrs), addrs)
+		for _, addr := range addrs {
 			go dialGossip(addr)
 		}
 	}
@@ -632,9 +705,10 @@ func dialGossip(s2sAddr string) {
 		return
 	}
 
-	// Read sync_response batches until the last batch (< 50 items) or error
+	// Read sync_response batches and user_key messages until terminal empty batch or error
 	syncCount := 0
-	for {
+	done := false
+	for !done {
 		conn.SetDeadline(time.Now().Add(30 * time.Second)) //nolint:errcheck
 		line, err := reader.ReadBytes('\n')
 		if err != nil || len(line) < 2 {
@@ -644,15 +718,19 @@ func dialGossip(s2sAddr string) {
 		if err := json.Unmarshal(line[:len(line)-1], &syncResp); err != nil {
 			break
 		}
-		if syncResp.Type != "sync_response" {
-			break
-		}
-		for _, m := range syncResp.Messages {
-			processSyncedMessage(m)
-			syncCount++
-		}
-		if len(syncResp.Messages) < 50 {
-			break // last batch
+		switch syncResp.Type {
+		case "user_key":
+			handleS2SUserKey(syncResp)
+		case "sync_response":
+			for _, m := range syncResp.Messages {
+				processSyncedMessage(m)
+				syncCount++
+			}
+			if len(syncResp.Messages) < 50 {
+				done = true // last batch (terminal empty or partial)
+			}
+		default:
+			done = true
 		}
 	}
 	if syncCount > 0 {

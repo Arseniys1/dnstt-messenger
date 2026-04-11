@@ -3,3 +3,4 @@
 /server.exe
 client/e2e_key.json
 *.db
+/test-federation

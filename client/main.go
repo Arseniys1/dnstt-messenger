@@ -319,29 +319,30 @@ func sendE2EMessage(text string) {
 		return
 	}
 
-	// Collect recipients: all online users + self
+	// Collect recipients: all users whose pubkeys are known (local + federated) + self
 	pubkeyMu.RLock()
-	recipients := make(map[string][]byte)
+	recipients := make(map[string][]byte, len(knownPubkeys)+1)
+	for name, pk := range knownPubkeys {
+		pkCopy := make([]byte, len(pk))
+		copy(pkCopy, pk)
+		recipients[name] = pkCopy
+	}
+	// Check for missing pubkeys among locally-online users (same server)
 	var missing []string
 	for _, name := range sidNames {
 		if name == myLogin {
-			continue // self handled below; always available
+			continue
 		}
-		if pk, ok := knownPubkeys[name]; ok {
-			recipients[name] = pk
-		} else {
+		if _, ok := knownPubkeys[name]; !ok {
 			missing = append(missing, name)
 		}
 	}
+	pubkeyMu.RUnlock()
+
 	// Add self unconditionally — we always have our own pubkey
 	if myLogin != "" {
-		if pk, ok := knownPubkeys[myLogin]; ok {
-			recipients[myLogin] = pk
-		} else {
-			recipients[myLogin] = e2ePubKey.Bytes()
-		}
+		recipients[myLogin] = e2ePubKey.Bytes()
 	}
-	pubkeyMu.RUnlock()
 
 	if len(missing) > 0 {
 		// Queue the message; request missing pubkeys
@@ -468,25 +469,28 @@ func flushPendingMessages() {
 
 	for _, text := range msgs {
 		pubkeyMu.RLock()
-		recipients := make(map[string][]byte)
+		recipients := make(map[string][]byte, len(knownPubkeys)+1)
+		for name, pk := range knownPubkeys {
+			pkCopy := make([]byte, len(pk))
+			copy(pkCopy, pk)
+			recipients[name] = pkCopy
+		}
 		var missing []string
 		for _, name := range sidNames {
 			if name == myLogin {
-				continue // self handled below
+				continue
 			}
-			if pk, ok := knownPubkeys[name]; ok {
-				recipients[name] = pk
-			} else {
+			if _, ok := knownPubkeys[name]; !ok {
 				missing = append(missing, name)
 			}
 		}
+		pubkeyMu.RUnlock()
+
 		if myLogin != "" {
 			recipients[myLogin] = e2ePubKey.Bytes()
 		}
-		pubkeyMu.RUnlock()
 
 		if len(missing) > 0 {
-			// Still missing some keys, re-queue
 			pendingMu.Lock()
 			pendingMessages = append(pendingMessages, text)
 			pendingMu.Unlock()
@@ -668,15 +672,20 @@ func readLoop(loginDone chan bool, historyDone chan struct{}) {
 }
 
 // handleE2EIncoming decrypts and displays an incoming E2E message.
-// Payload: [SenderSID(2 BE)][MsgID(4 LE)][Nonce(12)][EncContentLen(2 LE)][EncContent(N)][Envelope(80)]
+// Payload: [SenderLen(1)][Sender(N)][MsgID(4 LE)][storedBlob(12+N)][Envelope(80)]
 func handleE2EIncoming(payload []byte) {
-	// minimum: 2 + 4 + 12 + 2 + 0 + 80 = 100 bytes
-	if len(payload) < 100 {
+	// minimum: 1(senderLen) + 4(msgID) + 14(storedBlob min) + 80(envelope) = 99
+	if len(payload) < 99 {
 		return
 	}
-	senderSID := uint16(payload[0])<<8 | uint16(payload[1])
-	// payload[2:6] = MsgID (unused on client side for now)
-	storedBlob := payload[6 : len(payload)-80]
+	senderLen := int(payload[0])
+	if 1+senderLen+4+14+80 > len(payload) {
+		return
+	}
+	senderName := string(payload[1 : 1+senderLen])
+	// MsgID at offset 1+senderLen (4 bytes LE) — unused on client side
+	off := 1 + senderLen + 4
+	storedBlob := payload[off : len(payload)-80]
 	envelope := payload[len(payload)-80:]
 
 	if len(storedBlob) < 14 {
@@ -695,9 +704,8 @@ func handleE2EIncoming(payload []byte) {
 		return
 	}
 
-	senderName := sidNames[senderSID]
 	if senderName == "" {
-		senderName = fmt.Sprintf("SID:%d", senderSID)
+		senderName = "unknown"
 	}
 	now := time.Now().Local().Format("15:04")
 	fmt.Printf("\n📨 [%s] [%s]: %s\n>> ", now, senderName, string(plain))
