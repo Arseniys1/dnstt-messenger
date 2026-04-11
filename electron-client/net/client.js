@@ -85,8 +85,11 @@ class MessengerClient extends EventEmitter {
     this._e2ePrivKey = null;     // Uint8Array (32 bytes)
     this._e2ePubKey  = null;     // Uint8Array (32 bytes)
     this._knownPubkeys = new Map(); // username → Buffer(32)
-    this._pendingMessages = [];   // messages waiting for pubkeys
+    this._pendingMessages = [];   // messages waiting for pubkeys or initial sync
     this._myLogin = '';
+    // True after HISTORY_END — guarantees ONLINE_LIST has been processed
+    // so all recipients are known before the first send.
+    this._readyToSend = false;
   }
 
   // ---- Key file path ----
@@ -166,6 +169,7 @@ class MessengerClient extends EventEmitter {
   async connect() {
     await loadCrypto();
     this._loadOrGenerateE2EKey();
+    this._readyToSend = false;
 
     const srv = this._parseAddr(this.cfg.server_addr);
     let socket;
@@ -302,6 +306,14 @@ class MessengerClient extends EventEmitter {
   // ---- Send E2E message ----
   sendMessage(text) {
     if (!this._e2ePrivKey) return false;
+
+    // Queue if initial sync (ONLINE_LIST + history) hasn't completed yet.
+    // Without this, a message sent before ONLINE_LIST arrives would be
+    // encrypted only for self (_sidNames is empty) and lost for all other users.
+    if (!this._readyToSend) {
+      this._pendingMessages.push(text);
+      return true;
+    }
 
     // Collect recipients + check for missing pubkeys
     const recipients = new Map();
@@ -464,7 +476,9 @@ class MessengerClient extends EventEmitter {
         break;
 
       case CMD.HISTORY_END:
+        this._readyToSend = true;
         this.emit('history-end');
+        this._flushPending();
         break;
 
       case CMD.E2E_HISTORY: {
