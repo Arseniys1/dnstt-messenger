@@ -50,6 +50,23 @@ const (
 	CmdE2EMsg           = 0x12
 	CmdE2EIncoming      = 0x13
 	CmdE2EHistory       = 0x14
+	// Direct messages
+	CmdDM         = 0x15
+	CmdDMIncoming = 0x16
+	CmdDMHistory  = 0x17
+	// Rooms / group chats
+	CmdCreateRoom      = 0x18
+	CmdRoomCreated     = 0x19
+	CmdRoomList        = 0x1A
+	CmdJoinRoom        = 0x1B
+	CmdLeaveRoom       = 0x1C
+	CmdRoomMsg         = 0x1D
+	CmdRoomMsgIncoming = 0x1E
+	CmdRoomHistory     = 0x1F
+	CmdRoomInvite      = 0x20
+	CmdRoomMembers     = 0x21
+	CmdRoomMemberAdd   = 0x22
+	CmdRoomMemberRem   = 0x23
 )
 
 // clientState holds all per-session state.
@@ -223,10 +240,31 @@ func handleConnection(conn net.Conn) {
 			case CmdFragment:
 				if mySID != 0 {
 					if innerCmd, data := handleFragment(mySID, payload); data != nil {
-						if innerCmd == CmdE2EMsg {
+						switch innerCmd {
+						case CmdE2EMsg:
 							handleE2EMessage(mySID, data)
+						case CmdDM:
+							handleDM(mySID, data)
+						case CmdRoomMsg:
+							handleRoomMsg(mySID, data)
 						}
 					}
+				}
+			case CmdCreateRoom:
+				if mySID != 0 {
+					handleCreateRoom(mySID, payload)
+				}
+			case CmdJoinRoom:
+				if mySID != 0 {
+					handleJoinRoom(mySID, payload)
+				}
+			case CmdLeaveRoom:
+				if mySID != 0 {
+					handleLeaveRoom(mySID, payload)
+				}
+			case CmdRoomInvite:
+				if mySID != 0 {
+					handleRoomInvite(mySID, payload)
 				}
 			}
 		}
@@ -311,6 +349,11 @@ func handleLogin(conn net.Conn, data []byte, sharedKey []byte) uint16 {
 		sendE2EHistory(conn, login)
 		// 3b. Send all known user public keys (including federated users)
 		sendAllUserKeys(conn)
+		// 3c. Send DM history
+		sendDMHistory(conn, login)
+		// 3d. Send room list + per-room members & history
+		sendRoomList(conn, login)
+		sendRoomDataForUser(conn, login)
 		writeFrame(conn, CmdHistoryEnd, nil)
 		// 4. Send list of known federated servers
 		if payload := buildServerListPayload(); payload != nil {
@@ -783,6 +826,59 @@ func initDB() {
 	// Migrate old TEXT timestamps to INTEGER
 	db.Exec(`UPDATE messages SET created_at = CAST(strftime('%s', created_at) AS INTEGER)
 		WHERE typeof(created_at) = 'text'`) //nolint:errcheck
+
+	// Direct messages
+	db.Exec(`CREATE TABLE IF NOT EXISTS dm_messages (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		sender TEXT NOT NULL,
+		recipient TEXT NOT NULL,
+		encrypted_content BLOB NOT NULL,
+		global_id TEXT,
+		origin_server TEXT,
+		created_at INTEGER DEFAULT (strftime('%s','now'))
+	);`) //nolint:errcheck
+
+	db.Exec(`CREATE TABLE IF NOT EXISTS dm_keys (
+		msg_id INTEGER NOT NULL,
+		login TEXT NOT NULL,
+		key_envelope BLOB NOT NULL,
+		PRIMARY KEY (msg_id, login)
+	);`) //nolint:errcheck
+
+	// Rooms / group chats
+	db.Exec(`CREATE TABLE IF NOT EXISTS rooms (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		name TEXT UNIQUE NOT NULL,
+		description TEXT DEFAULT '',
+		is_public INTEGER DEFAULT 0,
+		owner TEXT NOT NULL,
+		created_at INTEGER DEFAULT (strftime('%s','now'))
+	);`) //nolint:errcheck
+
+	db.Exec(`CREATE TABLE IF NOT EXISTS room_members (
+		room_id INTEGER NOT NULL,
+		login TEXT NOT NULL,
+		is_admin INTEGER DEFAULT 0,
+		joined_at INTEGER DEFAULT (strftime('%s','now')),
+		PRIMARY KEY (room_id, login)
+	);`) //nolint:errcheck
+
+	db.Exec(`CREATE TABLE IF NOT EXISTS room_messages (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		room_id INTEGER NOT NULL,
+		sender TEXT NOT NULL,
+		encrypted_content BLOB NOT NULL,
+		global_id TEXT,
+		origin_server TEXT,
+		created_at INTEGER DEFAULT (strftime('%s','now'))
+	);`) //nolint:errcheck
+
+	db.Exec(`CREATE TABLE IF NOT EXISTS room_msg_keys (
+		msg_id INTEGER NOT NULL,
+		login TEXT NOT NULL,
+		key_envelope BLOB NOT NULL,
+		PRIMARY KEY (msg_id, login)
+	);`) //nolint:errcheck
 }
 
 // migrateColumn adds a column to a table if it does not already exist.
@@ -801,4 +897,743 @@ func migrateColumn(table, column, colType string) {
 		}
 	}
 	db.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, colType)) //nolint:errcheck
+}
+
+// ─── Direct Messages ────────────────────────────────────────────────────────
+
+// handleDM processes a fully reassembled CmdDM payload.
+// Assembled format: [RecipientLen(1)][Recipient(N)][Nonce(12)][EncContentLen(2LE)][EncContent(N)]
+//
+//	[EnvelopeCount(1)]  per envelope: [LoginLen(1)][Login(N)][Envelope(80)]
+func handleDM(senderSID uint16, data []byte) {
+	if senderSID == 0 || len(data) < 1 {
+		return
+	}
+	rLen := int(data[0])
+	if len(data) < 1+rLen+12+2+1 {
+		return
+	}
+	recipient := string(data[1 : 1+rLen])
+	off := 1 + rLen
+
+	nonce := data[off : off+12]
+	off += 12
+	encContentLen := int(binary.LittleEndian.Uint16(data[off : off+2]))
+	off += 2
+	if len(data) < off+encContentLen+1 {
+		return
+	}
+	encContent := data[off : off+encContentLen]
+	off += encContentLen
+
+	envelopeCount := int(data[off])
+	off++
+	envelopes := make(map[string][]byte)
+	for i := 0; i < envelopeCount; i++ {
+		if off >= len(data) {
+			break
+		}
+		lLen := int(data[off])
+		off++
+		if off+lLen+80 > len(data) {
+			break
+		}
+		login := string(data[off : off+lLen])
+		off += lLen
+		env := make([]byte, 80)
+		copy(env, data[off:off+80])
+		off += 80
+		envelopes[login] = env
+	}
+
+	sessMu.RLock()
+	senderLogin := ""
+	senderConn := net.Conn(nil)
+	if cs, ok := clients[senderSID]; ok {
+		senderLogin = cs.login
+		senderConn = cs.conn
+	}
+	sessMu.RUnlock()
+	if senderLogin == "" {
+		return
+	}
+
+	storedBlob := make([]byte, 14+len(encContent))
+	copy(storedBlob[:12], nonce)
+	binary.LittleEndian.PutUint16(storedBlob[12:14], uint16(len(encContent)))
+	copy(storedBlob[14:], encContent)
+
+	globalID := uuid.New().String()
+	result, err := db.Exec(
+		`INSERT INTO dm_messages (sender, recipient, encrypted_content, global_id, origin_server, created_at)
+		 VALUES (?, ?, ?, ?, ?, strftime('%s','now'))`,
+		senderLogin, recipient, storedBlob, globalID, cfg.PublicAddr,
+	)
+	if err != nil {
+		return
+	}
+	msgID, _ := result.LastInsertId()
+	for login, env := range envelopes {
+		db.Exec( //nolint:errcheck
+			"INSERT OR IGNORE INTO dm_keys (msg_id, login, key_envelope) VALUES (?, ?, ?)",
+			msgID, login, env,
+		)
+	}
+	fmt.Printf("💬 [DM] %s → %s\n", senderLogin, recipient)
+
+	if senderConn != nil {
+		writeFrame(senderConn, CmdAck, nil)
+	}
+
+	// Deliver to recipient if online
+	senderBytes := []byte(senderLogin)
+	idBuf := make([]byte, 4)
+	binary.LittleEndian.PutUint32(idBuf, uint32(msgID))
+
+	sessMu.RLock()
+	var recipConn net.Conn
+	for _, cs := range clients {
+		if cs.login == recipient {
+			recipConn = cs.conn
+			break
+		}
+	}
+	sessMu.RUnlock()
+
+	if recipConn != nil {
+		if env, ok := envelopes[recipient]; ok {
+			payload := make([]byte, 0, 1+len(senderBytes)+4+len(storedBlob)+80)
+			payload = append(payload, byte(len(senderBytes)))
+			payload = append(payload, senderBytes...)
+			payload = append(payload, idBuf...)
+			payload = append(payload, storedBlob...)
+			payload = append(payload, env...)
+			writeFrame(recipConn, CmdDMIncoming, payload)
+		}
+	}
+}
+
+// sendDMHistory sends stored DMs for login (as sender or recipient).
+// CmdDMHistory: [SenderLen(1)][Sender(N)][RecipientLen(1)][Recipient(N)][Timestamp(4BE)][MsgID(4LE)][storedBlob][Envelope(80)]
+func sendDMHistory(conn net.Conn, login string) {
+	limit := cfg.HistoryLimit
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := db.Query(`
+		SELECT m.id, m.sender, m.recipient, m.encrypted_content, CAST(m.created_at AS INTEGER), dk.key_envelope
+		FROM dm_messages m
+		JOIN dm_keys dk ON dk.msg_id = m.id
+		WHERE dk.login = ? AND m.encrypted_content IS NOT NULL
+		ORDER BY m.created_at ASC, m.id ASC
+		LIMIT ?
+	`, login, limit)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			msgID     int64
+			sender    string
+			recip     string
+			blob      []byte
+			createdAt int64
+			envelope  []byte
+		)
+		if err := rows.Scan(&msgID, &sender, &recip, &blob, &createdAt, &envelope); err != nil {
+			continue
+		}
+		if len(blob) < 14 || len(envelope) != 80 {
+			continue
+		}
+		ts := uint32(createdAt)
+		sb := []byte(sender)
+		rb := []byte(recip)
+		idBuf := make([]byte, 4)
+		binary.LittleEndian.PutUint32(idBuf, uint32(msgID))
+
+		payload := make([]byte, 0, 1+len(sb)+1+len(rb)+4+4+len(blob)+80)
+		payload = append(payload, byte(len(sb)))
+		payload = append(payload, sb...)
+		payload = append(payload, byte(len(rb)))
+		payload = append(payload, rb...)
+		payload = append(payload, byte(ts>>24), byte(ts>>16), byte(ts>>8), byte(ts))
+		payload = append(payload, idBuf...)
+		payload = append(payload, blob...)
+		payload = append(payload, envelope...)
+		writeFrame(conn, CmdDMHistory, payload)
+	}
+}
+
+// ─── Rooms ───────────────────────────────────────────────────────────────────
+
+// handleCreateRoom: [NameLen(1)][Name(N)][IsPublic(1)][DescLen(2LE)][Desc(N)]
+func handleCreateRoom(senderSID uint16, payload []byte) {
+	if len(payload) < 4 {
+		return
+	}
+	nLen := int(payload[0])
+	if len(payload) < 1+nLen+1+2 {
+		return
+	}
+	name := string(payload[1 : 1+nLen])
+	isPublic := payload[1+nLen]
+	descLen := int(binary.LittleEndian.Uint16(payload[1+nLen+1 : 1+nLen+3]))
+	off := 1 + nLen + 3
+	desc := ""
+	if len(payload) >= off+descLen {
+		desc = string(payload[off : off+descLen])
+	}
+
+	sessMu.RLock()
+	login := ""
+	conn := net.Conn(nil)
+	if cs, ok := clients[senderSID]; ok {
+		login = cs.login
+		conn = cs.conn
+	}
+	sessMu.RUnlock()
+	if login == "" {
+		return
+	}
+
+	result, err := db.Exec(
+		`INSERT INTO rooms (name, description, is_public, owner, created_at)
+		 VALUES (?, ?, ?, ?, strftime('%s','now'))`,
+		name, desc, int(isPublic), login,
+	)
+	if err != nil {
+		fmt.Printf("❌ Ошибка создания комнаты '%s': %v\n", name, err)
+		return
+	}
+	roomID, _ := result.LastInsertId()
+	db.Exec( //nolint:errcheck
+		"INSERT OR IGNORE INTO room_members (room_id, login, is_admin) VALUES (?, ?, 1)",
+		roomID, login,
+	)
+	fmt.Printf("🏠 Комната создана: %s (ID: %d, public: %v)\n", name, roomID, isPublic != 0)
+
+	idBuf := make([]byte, 4)
+	binary.LittleEndian.PutUint32(idBuf, uint32(roomID))
+	nb := []byte(name)
+	ob := []byte(login)
+	resp := make([]byte, 0, 4+1+len(nb)+1+1+len(ob))
+	resp = append(resp, idBuf...)
+	resp = append(resp, byte(len(nb)))
+	resp = append(resp, nb...)
+	resp = append(resp, isPublic)
+	resp = append(resp, byte(len(ob)))
+	resp = append(resp, ob...)
+	writeFrame(conn, CmdRoomCreated, resp)
+	sendRoomMembersTo(conn, uint32(roomID))
+}
+
+// sendRoomList sends CmdRoomList with all public rooms + private rooms the user belongs to.
+// Format: [RoomCount(2LE)] per room: [RoomID(4LE)][NameLen(1)][Name(N)][IsPublic(1)][OwnerLen(1)][Owner(N)][MemberCount(2LE)]
+func sendRoomList(conn net.Conn, login string) {
+	rows, err := db.Query(`
+		SELECT DISTINCT r.id, r.name, r.is_public, r.owner,
+		       (SELECT COUNT(*) FROM room_members rm2 WHERE rm2.room_id = r.id) as mc
+		FROM rooms r
+		LEFT JOIN room_members rm ON rm.room_id = r.id AND rm.login = ?
+		WHERE r.is_public = 1 OR rm.login IS NOT NULL
+		ORDER BY r.id ASC
+	`, login)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+
+	var entries [][]byte
+	for rows.Next() {
+		var (
+			roomID  int64
+			name    string
+			isPubl  int
+			owner   string
+			memCount int
+		)
+		if err := rows.Scan(&roomID, &name, &isPubl, &owner, &memCount); err != nil {
+			continue
+		}
+		idBuf := make([]byte, 4)
+		binary.LittleEndian.PutUint32(idBuf, uint32(roomID))
+		mcBuf := make([]byte, 2)
+		binary.LittleEndian.PutUint16(mcBuf, uint16(memCount))
+		nb := []byte(name)
+		ob := []byte(owner)
+		entry := make([]byte, 0, 4+1+len(nb)+1+1+len(ob)+2)
+		entry = append(entry, idBuf...)
+		entry = append(entry, byte(len(nb)))
+		entry = append(entry, nb...)
+		entry = append(entry, byte(isPubl))
+		entry = append(entry, byte(len(ob)))
+		entry = append(entry, ob...)
+		entry = append(entry, mcBuf...)
+		entries = append(entries, entry)
+	}
+
+	countBuf := make([]byte, 2)
+	binary.LittleEndian.PutUint16(countBuf, uint16(len(entries)))
+	payload := countBuf
+	for _, e := range entries {
+		payload = append(payload, e...)
+	}
+	writeFrame(conn, CmdRoomList, payload)
+}
+
+// sendRoomMembersTo sends CmdRoomMembers for a given room to conn.
+// Format: [RoomID(4LE)][MemberCount(2LE)] per member: [LoginLen(1)][Login(N)][IsAdmin(1)]
+func sendRoomMembersTo(conn net.Conn, roomID uint32) {
+	rows, err := db.Query("SELECT login, is_admin FROM room_members WHERE room_id = ?", roomID)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+	var members [][]byte
+	for rows.Next() {
+		var login string
+		var isAdmin int
+		if err := rows.Scan(&login, &isAdmin); err != nil {
+			continue
+		}
+		lb := []byte(login)
+		entry := make([]byte, 0, 1+len(lb)+1)
+		entry = append(entry, byte(len(lb)))
+		entry = append(entry, lb...)
+		entry = append(entry, byte(isAdmin))
+		members = append(members, entry)
+	}
+	idBuf := make([]byte, 4)
+	binary.LittleEndian.PutUint32(idBuf, roomID)
+	mcBuf := make([]byte, 2)
+	binary.LittleEndian.PutUint16(mcBuf, uint16(len(members)))
+	payload := append(idBuf, mcBuf...)
+	for _, m := range members {
+		payload = append(payload, m...)
+	}
+	writeFrame(conn, CmdRoomMembers, payload)
+}
+
+// sendRoomDataForUser sends members + history for every room the user belongs to.
+func sendRoomDataForUser(conn net.Conn, login string) {
+	rows, err := db.Query(
+		"SELECT room_id FROM room_members WHERE login = ?", login,
+	)
+	if err != nil {
+		return
+	}
+	var ids []uint32
+	for rows.Next() {
+		var id uint32
+		if rows.Scan(&id) == nil {
+			ids = append(ids, id)
+		}
+	}
+	rows.Close()
+	for _, id := range ids {
+		sendRoomMembersTo(conn, id)
+		sendRoomHistory(conn, id, login)
+	}
+}
+
+// sendRoomHistory sends CmdRoomHistory entries for a user in a room.
+// Format: [RoomID(4LE)][SenderLen(1)][Sender(N)][Timestamp(4BE)][MsgID(4LE)][storedBlob][Envelope(80)]
+func sendRoomHistory(conn net.Conn, roomID uint32, login string) {
+	limit := cfg.HistoryLimit
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := db.Query(`
+		SELECT m.id, m.sender, m.encrypted_content, CAST(m.created_at AS INTEGER), rmk.key_envelope
+		FROM room_messages m
+		JOIN room_msg_keys rmk ON rmk.msg_id = m.id
+		WHERE m.room_id = ? AND rmk.login = ? AND m.encrypted_content IS NOT NULL
+		ORDER BY m.created_at ASC, m.id ASC
+		LIMIT ?
+	`, roomID, login, limit)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+
+	idBuf := make([]byte, 4)
+	binary.LittleEndian.PutUint32(idBuf, roomID)
+
+	for rows.Next() {
+		var (
+			msgID     int64
+			sender    string
+			blob      []byte
+			createdAt int64
+			envelope  []byte
+		)
+		if err := rows.Scan(&msgID, &sender, &blob, &createdAt, &envelope); err != nil {
+			continue
+		}
+		if len(blob) < 14 || len(envelope) != 80 {
+			continue
+		}
+		ts := uint32(createdAt)
+		sb := []byte(sender)
+		midBuf := make([]byte, 4)
+		binary.LittleEndian.PutUint32(midBuf, uint32(msgID))
+
+		payload := make([]byte, 0, 4+1+len(sb)+4+4+len(blob)+80)
+		payload = append(payload, idBuf...)
+		payload = append(payload, byte(len(sb)))
+		payload = append(payload, sb...)
+		payload = append(payload, byte(ts>>24), byte(ts>>16), byte(ts>>8), byte(ts))
+		payload = append(payload, midBuf...)
+		payload = append(payload, blob...)
+		payload = append(payload, envelope...)
+		writeFrame(conn, CmdRoomHistory, payload)
+	}
+}
+
+// handleJoinRoom: [RoomID(4LE)]
+func handleJoinRoom(senderSID uint16, payload []byte) {
+	if len(payload) < 4 {
+		return
+	}
+	roomID := binary.LittleEndian.Uint32(payload[:4])
+
+	sessMu.RLock()
+	login := ""
+	conn := net.Conn(nil)
+	if cs, ok := clients[senderSID]; ok {
+		login = cs.login
+		conn = cs.conn
+	}
+	sessMu.RUnlock()
+	if login == "" {
+		return
+	}
+
+	var isPublic int
+	var roomName string
+	if err := db.QueryRow("SELECT is_public, name FROM rooms WHERE id = ?", roomID).Scan(&isPublic, &roomName); err != nil {
+		return
+	}
+
+	var exists int
+	db.QueryRow("SELECT COUNT(*) FROM room_members WHERE room_id = ? AND login = ?", roomID, login).Scan(&exists) //nolint:errcheck
+	if exists > 0 {
+		sendRoomMembersTo(conn, roomID)
+		sendRoomHistory(conn, roomID, login)
+		return
+	}
+	if isPublic == 0 {
+		return // private room — invite only
+	}
+	db.Exec("INSERT OR IGNORE INTO room_members (room_id, login, is_admin) VALUES (?, ?, 0)", roomID, login) //nolint:errcheck
+	fmt.Printf("🚪 %s вошел в комнату %s (ID: %d)\n", login, roomName, roomID)
+
+	// Inform joiner
+	idBuf := make([]byte, 4)
+	binary.LittleEndian.PutUint32(idBuf, roomID)
+	nb := []byte(roomName)
+	var owner string
+	db.QueryRow("SELECT owner FROM rooms WHERE id = ?", roomID).Scan(&owner) //nolint:errcheck
+	ob := []byte(owner)
+	resp := make([]byte, 0, 4+1+len(nb)+1+1+len(ob))
+	resp = append(resp, idBuf...)
+	resp = append(resp, byte(len(nb)))
+	resp = append(resp, nb...)
+	resp = append(resp, byte(isPublic))
+	resp = append(resp, byte(len(ob)))
+	resp = append(resp, ob...)
+	writeFrame(conn, CmdRoomCreated, resp)
+
+	sendRoomMembersTo(conn, roomID)
+	sendRoomHistory(conn, roomID, login)
+	broadcastRoomMemberAdd(roomID, login, senderSID)
+}
+
+// handleLeaveRoom: [RoomID(4LE)]
+func handleLeaveRoom(senderSID uint16, payload []byte) {
+	if len(payload) < 4 {
+		return
+	}
+	roomID := binary.LittleEndian.Uint32(payload[:4])
+
+	sessMu.RLock()
+	login := ""
+	if cs, ok := clients[senderSID]; ok {
+		login = cs.login
+	}
+	sessMu.RUnlock()
+	if login == "" {
+		return
+	}
+	db.Exec("DELETE FROM room_members WHERE room_id = ? AND login = ?", roomID, login) //nolint:errcheck
+	fmt.Printf("🚪 %s покинул комнату ID: %d\n", login, roomID)
+	broadcastRoomMemberRem(roomID, login, senderSID)
+}
+
+// handleRoomMsg processes assembled CmdRoomMsg payload.
+// Format: [RoomID(4LE)][Nonce(12)][EncContentLen(2LE)][EncContent(N)][EnvelopeCount(1)]
+//
+//	per envelope: [LoginLen(1)][Login(N)][Envelope(80)]
+func handleRoomMsg(senderSID uint16, data []byte) {
+	if senderSID == 0 || len(data) < 4+12+2+1 {
+		return
+	}
+	roomID := binary.LittleEndian.Uint32(data[:4])
+	off := 4
+	nonce := data[off : off+12]
+	off += 12
+	encContentLen := int(binary.LittleEndian.Uint16(data[off : off+2]))
+	off += 2
+	if len(data) < off+encContentLen+1 {
+		return
+	}
+	encContent := data[off : off+encContentLen]
+	off += encContentLen
+	envelopeCount := int(data[off])
+	off++
+	envelopes := make(map[string][]byte)
+	for i := 0; i < envelopeCount; i++ {
+		if off >= len(data) {
+			break
+		}
+		lLen := int(data[off])
+		off++
+		if off+lLen+80 > len(data) {
+			break
+		}
+		login := string(data[off : off+lLen])
+		off += lLen
+		env := make([]byte, 80)
+		copy(env, data[off:off+80])
+		off += 80
+		envelopes[login] = env
+	}
+
+	sessMu.RLock()
+	senderLogin := ""
+	senderConn := net.Conn(nil)
+	if cs, ok := clients[senderSID]; ok {
+		senderLogin = cs.login
+		senderConn = cs.conn
+	}
+	sessMu.RUnlock()
+	if senderLogin == "" {
+		return
+	}
+
+	var isMember int
+	db.QueryRow("SELECT COUNT(*) FROM room_members WHERE room_id = ? AND login = ?", roomID, senderLogin).Scan(&isMember) //nolint:errcheck
+	if isMember == 0 {
+		return
+	}
+
+	storedBlob := make([]byte, 14+len(encContent))
+	copy(storedBlob[:12], nonce)
+	binary.LittleEndian.PutUint16(storedBlob[12:14], uint16(len(encContent)))
+	copy(storedBlob[14:], encContent)
+
+	globalID := uuid.New().String()
+	result, err := db.Exec(
+		`INSERT INTO room_messages (room_id, sender, encrypted_content, global_id, origin_server, created_at)
+		 VALUES (?, ?, ?, ?, ?, strftime('%s','now'))`,
+		roomID, senderLogin, storedBlob, globalID, cfg.PublicAddr,
+	)
+	if err != nil {
+		return
+	}
+	msgID, _ := result.LastInsertId()
+	for login, env := range envelopes {
+		db.Exec( //nolint:errcheck
+			"INSERT OR IGNORE INTO room_msg_keys (msg_id, login, key_envelope) VALUES (?, ?, ?)",
+			msgID, login, env,
+		)
+	}
+	fmt.Printf("💬 [Room %d] %s: <зашифровано, %d байт>\n", roomID, senderLogin, len(encContent))
+
+	if senderConn != nil {
+		writeFrame(senderConn, CmdAck, nil)
+	}
+	broadcastRoomMsg(senderSID, senderLogin, roomID, msgID, storedBlob, envelopes)
+}
+
+// broadcastRoomMsg sends CmdRoomMsgIncoming to online room members (excluding sender).
+// Format: [RoomID(4LE)][SenderLen(1)][Sender(N)][MsgID(4LE)][storedBlob][Envelope(80)]
+func broadcastRoomMsg(senderSID uint16, senderLogin string, roomID uint32, msgID int64, storedBlob []byte, envelopes map[string][]byte) {
+	idBuf := make([]byte, 4)
+	binary.LittleEndian.PutUint32(idBuf, roomID)
+	midBuf := make([]byte, 4)
+	binary.LittleEndian.PutUint32(midBuf, uint32(msgID))
+	sb := []byte(senderLogin)
+
+	type target struct {
+		conn net.Conn
+		env  []byte
+	}
+	sessMu.RLock()
+	targets := make([]target, 0, len(clients))
+	for sid, cs := range clients {
+		if sid == senderSID {
+			continue
+		}
+		if env, ok := envelopes[cs.login]; ok {
+			targets = append(targets, target{conn: cs.conn, env: env})
+		}
+	}
+	sessMu.RUnlock()
+
+	for _, t := range targets {
+		payload := make([]byte, 0, 4+1+len(sb)+4+len(storedBlob)+80)
+		payload = append(payload, idBuf...)
+		payload = append(payload, byte(len(sb)))
+		payload = append(payload, sb...)
+		payload = append(payload, midBuf...)
+		payload = append(payload, storedBlob...)
+		payload = append(payload, t.env...)
+		writeFrame(t.conn, CmdRoomMsgIncoming, payload)
+	}
+}
+
+// handleRoomInvite: [RoomID(4LE)][UserLen(1)][User(N)]
+func handleRoomInvite(senderSID uint16, payload []byte) {
+	if len(payload) < 6 {
+		return
+	}
+	roomID := binary.LittleEndian.Uint32(payload[:4])
+	uLen := int(payload[4])
+	if len(payload) < 5+uLen {
+		return
+	}
+	targetUser := string(payload[5 : 5+uLen])
+
+	sessMu.RLock()
+	inviter := ""
+	if cs, ok := clients[senderSID]; ok {
+		inviter = cs.login
+	}
+	sessMu.RUnlock()
+	if inviter == "" {
+		return
+	}
+
+	var isMember int
+	db.QueryRow("SELECT COUNT(*) FROM room_members WHERE room_id = ? AND login = ?", roomID, inviter).Scan(&isMember) //nolint:errcheck
+	if isMember == 0 {
+		return
+	}
+
+	var roomName string
+	var isPublic int
+	var owner string
+	if err := db.QueryRow("SELECT name, is_public, owner FROM rooms WHERE id = ?", roomID).Scan(&roomName, &isPublic, &owner); err != nil {
+		return
+	}
+
+	db.Exec("INSERT OR IGNORE INTO room_members (room_id, login, is_admin) VALUES (?, ?, 0)", roomID, targetUser) //nolint:errcheck
+	fmt.Printf("📨 %s пригласил %s в комнату %s (ID: %d)\n", inviter, targetUser, roomName, roomID)
+
+	// Notify invited user if online
+	sessMu.RLock()
+	var targetConn net.Conn
+	var targetSID uint16
+	for sid, cs := range clients {
+		if cs.login == targetUser {
+			targetConn = cs.conn
+			targetSID = sid
+			break
+		}
+	}
+	sessMu.RUnlock()
+
+	if targetConn != nil {
+		idBuf := make([]byte, 4)
+		binary.LittleEndian.PutUint32(idBuf, roomID)
+		nb := []byte(roomName)
+		ob := []byte(owner)
+		ib := []byte(inviter)
+		notif := make([]byte, 0, 4+1+len(nb)+1+1+len(ob)+1+len(ib))
+		notif = append(notif, idBuf...)
+		notif = append(notif, byte(len(nb)))
+		notif = append(notif, nb...)
+		notif = append(notif, byte(isPublic))
+		notif = append(notif, byte(len(ob)))
+		notif = append(notif, ob...)
+		notif = append(notif, byte(len(ib)))
+		notif = append(notif, ib...)
+		writeFrame(targetConn, CmdRoomCreated, notif)
+		sendRoomMembersTo(targetConn, roomID)
+		sendRoomHistory(targetConn, roomID, targetUser)
+	}
+	broadcastRoomMemberAdd(roomID, targetUser, targetSID)
+}
+
+// broadcastRoomMemberAdd sends CmdRoomMemberAdd to all online room members.
+// Format: [RoomID(4LE)][LoginLen(1)][Login(N)]
+func broadcastRoomMemberAdd(roomID uint32, login string, exceptSID uint16) {
+	idBuf := make([]byte, 4)
+	binary.LittleEndian.PutUint32(idBuf, roomID)
+	lb := []byte(login)
+	payload := make([]byte, 0, 4+1+len(lb))
+	payload = append(payload, idBuf...)
+	payload = append(payload, byte(len(lb)))
+	payload = append(payload, lb...)
+
+	rows, err := db.Query("SELECT login FROM room_members WHERE room_id = ?", roomID)
+	if err != nil {
+		return
+	}
+	memberSet := make(map[string]bool)
+	for rows.Next() {
+		var ml string
+		if rows.Scan(&ml) == nil {
+			memberSet[ml] = true
+		}
+	}
+	rows.Close()
+
+	sessMu.RLock()
+	for sid, cs := range clients {
+		if sid != exceptSID && memberSet[cs.login] {
+			writeFrame(cs.conn, CmdRoomMemberAdd, payload)
+		}
+	}
+	sessMu.RUnlock()
+}
+
+// broadcastRoomMemberRem sends CmdRoomMemberRem to all online room members (including the leaver).
+// Format: [RoomID(4LE)][LoginLen(1)][Login(N)]
+func broadcastRoomMemberRem(roomID uint32, login string, leaverSID uint16) {
+	idBuf := make([]byte, 4)
+	binary.LittleEndian.PutUint32(idBuf, roomID)
+	lb := []byte(login)
+	payload := make([]byte, 0, 4+1+len(lb))
+	payload = append(payload, idBuf...)
+	payload = append(payload, byte(len(lb)))
+	payload = append(payload, lb...)
+
+	rows, err := db.Query("SELECT login FROM room_members WHERE room_id = ?", roomID)
+	if err != nil {
+		return
+	}
+	memberSet := make(map[string]bool)
+	for rows.Next() {
+		var ml string
+		if rows.Scan(&ml) == nil {
+			memberSet[ml] = true
+		}
+	}
+	rows.Close()
+
+	sessMu.RLock()
+	for _, cs := range clients {
+		if memberSet[cs.login] {
+			writeFrame(cs.conn, CmdRoomMemberRem, payload)
+		}
+	}
+	// Also notify the leaver themselves
+	if cs, ok := clients[leaverSID]; ok {
+		writeFrame(cs.conn, CmdRoomMemberRem, payload)
+	}
+	sessMu.RUnlock()
 }

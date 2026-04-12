@@ -59,17 +59,86 @@
       <span id="my-username"></span>
       <button id="btn-logout" title="Выйти">⏻</button>
     </div>
-    <div id="online-label">Онлайн</div>
+
+    <!-- Глобальный чат -->
+    <div class="sidebar-section-label">Глобальный чат</div>
+    <ul id="sidebar-nav">
+      <li id="nav-global" class="nav-item active" data-view="global">
+        <span class="nav-icon">#</span> Общий
+      </li>
+    </ul>
+
+    <!-- Личные сообщения -->
+    <div class="sidebar-section-label">
+      Личные сообщения
+      <button id="btn-new-dm" class="btn-section-add" title="Новое ЛС">+</button>
+    </div>
+    <ul id="dm-list"></ul>
+
+    <!-- Комнаты -->
+    <div class="sidebar-section-label">
+      Комнаты
+      <button id="btn-create-room" class="btn-section-add" title="Создать комнату">+</button>
+    </div>
+    <ul id="room-list-sidebar"></ul>
+
+    <!-- Онлайн пользователи (свёрнуто) -->
+    <div class="sidebar-section-label">Онлайн</div>
     <ul id="online-list"></ul>
   </aside>
 
   <main id="chat-area">
+    <div id="chat-header">
+      <span id="chat-title">Общий чат</span>
+      <div id="chat-header-actions"></div>
+    </div>
     <div id="messages"></div>
     <div id="input-bar">
       <textarea id="msg-input" placeholder="Сообщение..." rows="1"></textarea>
       <button id="btn-send">➤</button>
     </div>
   </main>
+</div>
+
+<!-- МОДАЛЬНОЕ ОКНО: новое ЛС -->
+<div id="modal-dm" class="modal-overlay hidden">
+  <div class="modal">
+    <h3>Новое личное сообщение</h3>
+    <input id="dm-target-user" type="text" placeholder="Логин пользователя" autocomplete="off" />
+    <div class="modal-actions">
+      <button id="btn-dm-cancel" class="btn-secondary">Отмена</button>
+      <button id="btn-dm-open" class="btn-primary">Открыть</button>
+    </div>
+  </div>
+</div>
+
+<!-- МОДАЛЬНОЕ ОКНО: создать комнату -->
+<div id="modal-create-room" class="modal-overlay hidden">
+  <div class="modal">
+    <h3>Создать комнату</h3>
+    <input id="room-name-input" type="text" placeholder="Название комнаты" autocomplete="off" />
+    <input id="room-desc-input" type="text" placeholder="Описание (необязательно)" />
+    <label class="row-label">
+      <input id="room-public-check" type="checkbox" />
+      Публичная (видна всем)
+    </label>
+    <div class="modal-actions">
+      <button id="btn-create-room-cancel" class="btn-secondary">Отмена</button>
+      <button id="btn-create-room-ok" class="btn-primary">Создать</button>
+    </div>
+  </div>
+</div>
+
+<!-- МОДАЛЬНОЕ ОКНО: пригласить в комнату -->
+<div id="modal-invite" class="modal-overlay hidden">
+  <div class="modal">
+    <h3>Пригласить в комнату</h3>
+    <input id="invite-username" type="text" placeholder="Логин пользователя" autocomplete="off" />
+    <div class="modal-actions">
+      <button id="btn-invite-cancel" class="btn-secondary">Отмена</button>
+      <button id="btn-invite-ok" class="btn-primary">Пригласить</button>
+    </div>
+  </div>
 </div>
 
 <script src="app.js"></script>

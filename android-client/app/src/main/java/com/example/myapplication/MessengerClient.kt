@@ -48,6 +48,23 @@ object Cmd {
     const val E2E_MSG            = 0x12.toByte()
     const val E2E_INCOMING       = 0x13.toByte()
     const val E2E_HISTORY        = 0x14.toByte()
+    // Direct messages
+    const val DM          = 0x15.toByte()
+    const val DM_INCOMING = 0x16.toByte()
+    const val DM_HISTORY  = 0x17.toByte()
+    // Rooms
+    const val CREATE_ROOM        = 0x18.toByte()
+    const val ROOM_CREATED       = 0x19.toByte()
+    const val ROOM_LIST          = 0x1A.toByte()
+    const val JOIN_ROOM          = 0x1B.toByte()
+    const val LEAVE_ROOM         = 0x1C.toByte()
+    const val ROOM_MSG           = 0x1D.toByte()
+    const val ROOM_MSG_INCOMING  = 0x1E.toByte()
+    const val ROOM_HISTORY       = 0x1F.toByte()
+    const val ROOM_INVITE        = 0x20.toByte()
+    const val ROOM_MEMBERS       = 0x21.toByte()
+    const val ROOM_MEMBER_ADD    = 0x22.toByte()
+    const val ROOM_MEMBER_REM    = 0x23.toByte()
 }
 
 private const val MAX_FRAME_SIZE = 180
@@ -76,6 +93,17 @@ sealed class ServerEvent {
     object LoginFail                          : ServerEvent()
     object Disconnected                       : ServerEvent()
     data class ServerList(val addrs: List<String>) : ServerEvent()
+    // DM events
+    data class DMMessage(val sender: String, val text: String, val time: String) : ServerEvent()
+    data class DMHistory(val sender: String, val recipient: String, val text: String, val time: String) : ServerEvent()
+    // Room events
+    data class RoomInfo(val id: Long, val name: String, val isPublic: Boolean, val owner: String) : ServerEvent()
+    data class RoomList(val rooms: List<RoomInfo>) : ServerEvent()
+    data class RoomMembers(val roomId: Long, val members: List<String>) : ServerEvent()
+    data class RoomMemberAdd(val roomId: Long, val login: String) : ServerEvent()
+    data class RoomMemberRem(val roomId: Long, val login: String) : ServerEvent()
+    data class RoomMessage(val roomId: Long, val sender: String, val text: String, val time: String) : ServerEvent()
+    data class RoomHistoryMsg(val roomId: Long, val sender: String, val text: String, val time: String) : ServerEvent()
 }
 
 class MessengerClient {
@@ -109,6 +137,10 @@ class MessengerClient {
     // Messages waiting for pubkeys
     private val pendingMessages = mutableListOf<String>()
     private val pendingLock     = Any()
+
+    // Room state: id → name, id → member logins
+    val rooms = ConcurrentHashMap<Long, String>()
+    val roomMembers = ConcurrentHashMap<Long, MutableSet<String>>()
 
     // ---- Fragment reassembly ----
     private data class FragKey(val msgId: Byte, val count: Byte)
@@ -438,6 +470,17 @@ class MessengerClient {
             Cmd.ONLINE_ADD    -> parseOnlineAdd(payload)
             Cmd.ONLINE_REMOVE -> parseOnlineRemove(payload)
             Cmd.SERVER_LIST   -> parseServerList(payload)
+            // DM
+            Cmd.DM_INCOMING   -> parseDMIncoming(payload)
+            Cmd.DM_HISTORY    -> parseDMHistory(payload)
+            // Rooms
+            Cmd.ROOM_LIST         -> parseRoomList(payload)
+            Cmd.ROOM_CREATED      -> parseRoomCreated(payload)
+            Cmd.ROOM_MEMBERS      -> parseRoomMembers(payload)
+            Cmd.ROOM_MEMBER_ADD   -> parseRoomMemberAdd(payload)
+            Cmd.ROOM_MEMBER_REM   -> parseRoomMemberRem(payload)
+            Cmd.ROOM_MSG_INCOMING -> parseRoomMsgIncoming(payload)
+            Cmd.ROOM_HISTORY      -> parseRoomHistory(payload)
             else -> null
         }
     }
@@ -482,12 +525,14 @@ class MessengerClient {
 
     // ---- E2E parsers ----
 
-    // CmdE2EIncoming: [SenderSID(2 BE)][MsgID(4 LE)][storedBlob(12+N)][Envelope(80)]
+    // CmdE2EIncoming: [SenderLen(1)][Sender(N)][MsgID(4 LE)][storedBlob(12+N)][Envelope(80)]
     private fun parseE2EIncoming(payload: ByteArray): ServerEvent? {
-        if (payload.size < 100) return null
-        val senderSID  = ((payload[0].toInt() and 0xFF) shl 8) or (payload[1].toInt() and 0xFF)
-        // payload[2:6] = MsgID (LE), not used on client
-        val storedBlob = payload.sliceArray(6 until payload.size - 80)
+        if (payload.size < 1 + 1 + 4 + 14 + 80) return null
+        val sLen = payload[0].toInt() and 0xFF
+        if (payload.size < 1 + sLen + 4 + 14 + 80) return null
+        val senderName = String(payload, 1, sLen)
+        // MsgID at offset 1+sLen (4 bytes LE) — unused on client side
+        val storedBlob = payload.sliceArray(1 + sLen + 4 until payload.size - 80)
         val envelope   = payload.sliceArray(payload.size - 80 until payload.size)
         if (storedBlob.size < 14) return null
 
@@ -497,9 +542,8 @@ class MessengerClient {
         val ciphertext = storedBlob.sliceArray(14 until 14 + encContentLen)
 
         return try {
-            val msgKey     = openEnvelope(envelope)
-            val plain      = chachaDecrypt(msgKey, nonce, ciphertext)
-            val senderName = sidNames[senderSID] ?: "SID:$senderSID"
+            val msgKey = openEnvelope(envelope)
+            val plain  = chachaDecrypt(msgKey, nonce, ciphertext)
             val now = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault())
                 .format(java.util.Date())
             ServerEvent.Message(ChatMessage(sender = senderName, text = String(plain), time = now))
@@ -698,6 +742,324 @@ class MessengerClient {
     private fun parseAddr(addr: String): Pair<String, Int> {
         val idx = addr.lastIndexOf(':')
         return addr.substring(0, idx) to addr.substring(idx + 1).toInt()
+    }
+
+    // ─── Direct Messages ──────────────────────────────────────────────────────
+
+    fun sendDM(recipientLogin: String, text: String) {
+        val privKey = e2ePrivKey ?: return
+        val recipPub = knownPubkeys[recipientLogin] ?: run {
+            sendPublicKeyRequestInternal(recipientLogin)
+            return
+        }
+        val rng = SecureRandom()
+        val msgKey = ByteArray(32).also { rng.nextBytes(it) }
+        val nonce  = ByteArray(12).also { rng.nextBytes(it) }
+        val encContent = chachaEncrypt(msgKey, nonce, text.toByteArray(Charsets.UTF_8))
+
+        data class Env(val login: String, val data: ByteArray)
+        val envelopes = mutableListOf<Env>()
+        try { envelopes += Env(recipientLogin, sealEnvelope(recipPub, msgKey)) } catch (_: Exception) { return }
+        val selfPub = knownPubkeys[myLogin] ?: e2ePubKey?.encoded
+        if (selfPub != null && myLogin.isNotEmpty()) {
+            try { envelopes += Env(myLogin, sealEnvelope(selfPub, msgKey)) } catch (_: Exception) {}
+        }
+
+        val rl = recipientLogin.toByteArray()
+        val ecLenBuf = ByteArray(2).also {
+            it[0] = (encContent.size and 0xFF).toByte()
+            it[1] = ((encContent.size shr 8) and 0xFF).toByte()
+        }
+        var assembled = byteArrayOf(rl.size.toByte()) + rl + nonce + ecLenBuf + encContent
+        assembled += byteArrayOf(envelopes.size.toByte())
+        for (env in envelopes) {
+            val lb = env.login.toByteArray()
+            assembled += byteArrayOf(lb.size.toByte()) + lb + env.data
+        }
+        sendFragmented(Cmd.DM, assembled)
+    }
+
+    // CmdDMIncoming: [SenderLen(1)][Sender(N)][MsgID(4LE)][storedBlob][Envelope(80)]
+    private fun parseDMIncoming(payload: ByteArray): ServerEvent? {
+        if (payload.size < 1 + 1 + 4 + 14 + 80) return null
+        val sLen = payload[0].toInt() and 0xFF
+        if (payload.size < 1 + sLen + 4 + 14 + 80) return null
+        val sender     = String(payload, 1, sLen)
+        val storedBlob = payload.sliceArray(1 + sLen + 4 until payload.size - 80)
+        val envelope   = payload.sliceArray(payload.size - 80 until payload.size)
+        if (storedBlob.size < 14) return null
+        return try {
+            val msgKey = openEnvelope(envelope)
+            val nonce  = storedBlob.copyOf(12)
+            val ecLen  = ((storedBlob[12].toInt() and 0xFF)) or ((storedBlob[13].toInt() and 0xFF) shl 8)
+            val plain  = chachaDecrypt(msgKey, nonce, storedBlob.sliceArray(14 until 14 + ecLen))
+            val now = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault()).format(java.util.Date())
+            ServerEvent.DMMessage(sender = sender, text = String(plain), time = now)
+        } catch (_: Exception) { null }
+    }
+
+    // CmdDMHistory: [SenderLen(1)][Sender(N)][RecipLen(1)][Recip(N)][Timestamp(4BE)][MsgID(4LE)][storedBlob][Envelope(80)]
+    private fun parseDMHistory(payload: ByteArray): ServerEvent? {
+        if (payload.size < 1 + 1 + 1 + 4 + 4 + 14 + 80) return null
+        val sLen = payload[0].toInt() and 0xFF
+        if (payload.size < 1 + sLen + 1) return null
+        val sender = String(payload, 1, sLen)
+        val rLen   = payload[1 + sLen].toInt() and 0xFF
+        if (payload.size < 1 + sLen + 1 + rLen + 4 + 4 + 14 + 80) return null
+        val recip  = String(payload, 1 + sLen + 1, rLen)
+        val tsOff  = 1 + sLen + 1 + rLen
+        val ts     = ((payload[tsOff].toInt() and 0xFF) shl 24) or
+                     ((payload[tsOff + 1].toInt() and 0xFF) shl 16) or
+                     ((payload[tsOff + 2].toInt() and 0xFF) shl 8) or
+                     (payload[tsOff + 3].toInt() and 0xFF)
+        val blobOff    = tsOff + 4 + 4
+        val storedBlob = payload.sliceArray(blobOff until payload.size - 80)
+        val envelope   = payload.sliceArray(payload.size - 80 until payload.size)
+        if (storedBlob.size < 14) return null
+        return try {
+            val msgKey = openEnvelope(envelope)
+            val nonce  = storedBlob.copyOf(12)
+            val ecLen  = ((storedBlob[12].toInt() and 0xFF)) or ((storedBlob[13].toInt() and 0xFF) shl 8)
+            val plain  = chachaDecrypt(msgKey, nonce, storedBlob.sliceArray(14 until 14 + ecLen))
+            val timeStr = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault())
+                .format(java.util.Date(ts.toLong() * 1000L))
+            ServerEvent.DMHistory(sender = sender, recipient = recip, text = String(plain), time = timeStr)
+        } catch (_: Exception) { null }
+    }
+
+    // ─── Rooms ────────────────────────────────────────────────────────────────
+
+    fun createRoom(name: String, isPublic: Boolean, description: String = "") {
+        val nb = name.toByteArray()
+        val db = description.toByteArray()
+        val descLenBuf = ByteArray(2).also {
+            it[0] = (db.size and 0xFF).toByte()
+            it[1] = ((db.size shr 8) and 0xFF).toByte()
+        }
+        val payload = byteArrayOf(nb.size.toByte()) + nb +
+                byteArrayOf(if (isPublic) 1 else 0) + descLenBuf + db
+        writeFrame(Cmd.CREATE_ROOM, payload)
+    }
+
+    fun joinRoom(roomId: Long) {
+        val buf = ByteArray(4)
+        buf[0] = (roomId and 0xFF).toByte()
+        buf[1] = ((roomId shr 8) and 0xFF).toByte()
+        buf[2] = ((roomId shr 16) and 0xFF).toByte()
+        buf[3] = ((roomId shr 24) and 0xFF).toByte()
+        writeFrame(Cmd.JOIN_ROOM, buf)
+    }
+
+    fun leaveRoom(roomId: Long) {
+        val buf = ByteArray(4)
+        buf[0] = (roomId and 0xFF).toByte()
+        buf[1] = ((roomId shr 8) and 0xFF).toByte()
+        buf[2] = ((roomId shr 16) and 0xFF).toByte()
+        buf[3] = ((roomId shr 24) and 0xFF).toByte()
+        writeFrame(Cmd.LEAVE_ROOM, buf)
+    }
+
+    fun inviteToRoom(roomId: Long, username: String) {
+        val ub = username.toByteArray()
+        val idBuf = ByteArray(4)
+        idBuf[0] = (roomId and 0xFF).toByte()
+        idBuf[1] = ((roomId shr 8) and 0xFF).toByte()
+        idBuf[2] = ((roomId shr 16) and 0xFF).toByte()
+        idBuf[3] = ((roomId shr 24) and 0xFF).toByte()
+        writeFrame(Cmd.ROOM_INVITE, idBuf + byteArrayOf(ub.size.toByte()) + ub)
+    }
+
+    fun sendRoomMessage(roomId: Long, text: String) {
+        val rng = SecureRandom()
+        val msgKey = ByteArray(32).also { rng.nextBytes(it) }
+        val nonce  = ByteArray(12).also { rng.nextBytes(it) }
+        val encContent = chachaEncrypt(msgKey, nonce, text.toByteArray(Charsets.UTF_8))
+
+        data class Env(val login: String, val data: ByteArray)
+        val envelopes = mutableListOf<Env>()
+        // Use room members (not all online users) so offline members get their envelope
+        val members = roomMembers[roomId] ?: emptySet<String>()
+        for (name in members) {
+            if (name == myLogin) continue // self handled below
+            val pk = knownPubkeys[name] ?: continue
+            try { envelopes += Env(name, sealEnvelope(pk, msgKey)) } catch (_: Exception) {}
+        }
+        if (myLogin.isNotEmpty()) {
+            val selfPk = knownPubkeys[myLogin] ?: e2ePubKey?.encoded
+            if (selfPk != null) {
+                try { envelopes += Env(myLogin, sealEnvelope(selfPk, msgKey)) } catch (_: Exception) {}
+            }
+        }
+
+        val idBuf = ByteArray(4)
+        idBuf[0] = (roomId and 0xFF).toByte()
+        idBuf[1] = ((roomId shr 8) and 0xFF).toByte()
+        idBuf[2] = ((roomId shr 16) and 0xFF).toByte()
+        idBuf[3] = ((roomId shr 24) and 0xFF).toByte()
+        val ecLenBuf = ByteArray(2).also {
+            it[0] = (encContent.size and 0xFF).toByte()
+            it[1] = ((encContent.size shr 8) and 0xFF).toByte()
+        }
+        var assembled = idBuf + nonce + ecLenBuf + encContent + byteArrayOf(envelopes.size.toByte())
+        for (env in envelopes) {
+            val lb = env.login.toByteArray()
+            assembled += byteArrayOf(lb.size.toByte()) + lb + env.data
+        }
+        sendFragmented(Cmd.ROOM_MSG, assembled)
+    }
+
+    // CmdRoomList: [RoomCount(2LE)] per: [RoomID(4LE)][NameLen(1)][Name(N)][IsPublic(1)][OwnerLen(1)][Owner(N)][MemberCount(2LE)]
+    private fun parseRoomList(payload: ByteArray): ServerEvent? {
+        if (payload.size < 2) return null
+        val count = ((payload[0].toInt() and 0xFF)) or ((payload[1].toInt() and 0xFF) shl 8)
+        var off = 2
+        val list = mutableListOf<ServerEvent.RoomInfo>()
+        repeat(count) {
+            if (off + 4 + 1 > payload.size) return@repeat
+            val id = ((payload[off].toInt() and 0xFF)) or
+                     ((payload[off+1].toInt() and 0xFF) shl 8) or
+                     ((payload[off+2].toInt() and 0xFF) shl 16) or
+                     ((payload[off+3].toInt() and 0xFF) shl 24)
+            off += 4
+            val nLen = payload[off++].toInt() and 0xFF
+            if (off + nLen + 1 + 1 + 2 > payload.size) return@repeat
+            val name = String(payload, off, nLen); off += nLen
+            val isPublic = payload[off++] != 0.toByte()
+            val oLen = payload[off++].toInt() and 0xFF
+            if (off + oLen + 2 > payload.size) return@repeat
+            val owner = String(payload, off, oLen); off += oLen
+            off += 2 // memberCount
+            rooms[id.toLong()] = name
+            list += ServerEvent.RoomInfo(id.toLong(), name, isPublic, owner)
+        }
+        return ServerEvent.RoomList(list)
+    }
+
+    // CmdRoomCreated: [RoomID(4LE)][NameLen(1)][Name(N)][IsPublic(1)][OwnerLen(1)][Owner(N)] [opt: InviterLen(1)][Inviter(N)]
+    private fun parseRoomCreated(payload: ByteArray): ServerEvent? {
+        if (payload.size < 4 + 1 + 1 + 1) return null
+        val id = ((payload[0].toInt() and 0xFF)) or
+                 ((payload[1].toInt() and 0xFF) shl 8) or
+                 ((payload[2].toInt() and 0xFF) shl 16) or
+                 ((payload[3].toInt() and 0xFF) shl 24)
+        val nLen = payload[4].toInt() and 0xFF
+        if (payload.size < 5 + nLen + 1 + 1) return null
+        val name = String(payload, 5, nLen)
+        val isPublic = payload[5 + nLen] != 0.toByte()
+        val oLen = payload[6 + nLen].toInt() and 0xFF
+        if (payload.size < 7 + nLen + oLen) return null
+        val owner = String(payload, 7 + nLen, oLen)
+        rooms[id.toLong()] = name
+        return ServerEvent.RoomInfo(id.toLong(), name, isPublic, owner)
+    }
+
+    // CmdRoomMembers: [RoomID(4LE)][MemberCount(2LE)] per: [LoginLen(1)][Login(N)][IsAdmin(1)]
+    private fun parseRoomMembers(payload: ByteArray): ServerEvent? {
+        if (payload.size < 6) return null
+        val id = ((payload[0].toInt() and 0xFF)) or
+                 ((payload[1].toInt() and 0xFF) shl 8) or
+                 ((payload[2].toInt() and 0xFF) shl 16) or
+                 ((payload[3].toInt() and 0xFF) shl 24)
+        val count = ((payload[4].toInt() and 0xFF)) or ((payload[5].toInt() and 0xFF) shl 8)
+        var off = 6
+        val members = mutableListOf<String>()
+        repeat(count) {
+            if (off >= payload.size) return@repeat
+            val lLen = payload[off++].toInt() and 0xFF
+            if (off + lLen + 1 > payload.size) return@repeat
+            members += String(payload, off, lLen); off += lLen
+            off++ // isAdmin
+            if (!knownPubkeys.containsKey(members.last())) sendPublicKeyRequestInternal(members.last())
+        }
+        // Update local room members cache
+        roomMembers[id.toLong()] = members.toMutableSet()
+        return ServerEvent.RoomMembers(id.toLong(), members)
+    }
+
+    // CmdRoomMemberAdd: [RoomID(4LE)][LoginLen(1)][Login(N)]
+    private fun parseRoomMemberAdd(payload: ByteArray): ServerEvent? {
+        if (payload.size < 6) return null
+        val id = ((payload[0].toInt() and 0xFF)) or
+                 ((payload[1].toInt() and 0xFF) shl 8) or
+                 ((payload[2].toInt() and 0xFF) shl 16) or
+                 ((payload[3].toInt() and 0xFF) shl 24)
+        val lLen = payload[4].toInt() and 0xFF
+        if (payload.size < 5 + lLen) return null
+        val login = String(payload, 5, lLen)
+        roomMembers.getOrPut(id.toLong()) { mutableSetOf() }.add(login)
+        if (!knownPubkeys.containsKey(login)) sendPublicKeyRequestInternal(login)
+        return ServerEvent.RoomMemberAdd(id.toLong(), login)
+    }
+
+    // CmdRoomMemberRem: [RoomID(4LE)][LoginLen(1)][Login(N)]
+    private fun parseRoomMemberRem(payload: ByteArray): ServerEvent? {
+        if (payload.size < 6) return null
+        val id = ((payload[0].toInt() and 0xFF)) or
+                 ((payload[1].toInt() and 0xFF) shl 8) or
+                 ((payload[2].toInt() and 0xFF) shl 16) or
+                 ((payload[3].toInt() and 0xFF) shl 24)
+        val lLen = payload[4].toInt() and 0xFF
+        if (payload.size < 5 + lLen) return null
+        val login = String(payload, 5, lLen)
+        roomMembers[id.toLong()]?.remove(login)
+        if (login == myLogin) {
+            roomMembers.remove(id.toLong())
+            rooms.remove(id.toLong())
+        }
+        return ServerEvent.RoomMemberRem(id.toLong(), login)
+    }
+
+    // CmdRoomMsgIncoming: [RoomID(4LE)][SenderLen(1)][Sender(N)][MsgID(4LE)][storedBlob][Envelope(80)]
+    private fun parseRoomMsgIncoming(payload: ByteArray): ServerEvent? {
+        if (payload.size < 4 + 1 + 1 + 4 + 14 + 80) return null
+        val id = ((payload[0].toInt() and 0xFF)) or
+                 ((payload[1].toInt() and 0xFF) shl 8) or
+                 ((payload[2].toInt() and 0xFF) shl 16) or
+                 ((payload[3].toInt() and 0xFF) shl 24)
+        val sLen = payload[4].toInt() and 0xFF
+        if (payload.size < 5 + sLen + 4 + 14 + 80) return null
+        val sender     = String(payload, 5, sLen)
+        val storedBlob = payload.sliceArray(5 + sLen + 4 until payload.size - 80)
+        val envelope   = payload.sliceArray(payload.size - 80 until payload.size)
+        if (storedBlob.size < 14) return null
+        return try {
+            val msgKey = openEnvelope(envelope)
+            val nonce  = storedBlob.copyOf(12)
+            val ecLen  = ((storedBlob[12].toInt() and 0xFF)) or ((storedBlob[13].toInt() and 0xFF) shl 8)
+            val plain  = chachaDecrypt(msgKey, nonce, storedBlob.sliceArray(14 until 14 + ecLen))
+            val now = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault()).format(java.util.Date())
+            ServerEvent.RoomMessage(id.toLong(), sender, String(plain), now)
+        } catch (_: Exception) { null }
+    }
+
+    // CmdRoomHistory: [RoomID(4LE)][SenderLen(1)][Sender(N)][Timestamp(4BE)][MsgID(4LE)][storedBlob][Envelope(80)]
+    private fun parseRoomHistory(payload: ByteArray): ServerEvent? {
+        if (payload.size < 4 + 1 + 1 + 4 + 4 + 14 + 80) return null
+        val id = ((payload[0].toInt() and 0xFF)) or
+                 ((payload[1].toInt() and 0xFF) shl 8) or
+                 ((payload[2].toInt() and 0xFF) shl 16) or
+                 ((payload[3].toInt() and 0xFF) shl 24)
+        val sLen = payload[4].toInt() and 0xFF
+        if (payload.size < 5 + sLen + 4 + 4 + 14 + 80) return null
+        val sender = String(payload, 5, sLen)
+        val tsOff  = 5 + sLen
+        val ts     = ((payload[tsOff].toInt() and 0xFF) shl 24) or
+                     ((payload[tsOff + 1].toInt() and 0xFF) shl 16) or
+                     ((payload[tsOff + 2].toInt() and 0xFF) shl 8) or
+                     (payload[tsOff + 3].toInt() and 0xFF)
+        val blobOff    = tsOff + 4 + 4
+        val storedBlob = payload.sliceArray(blobOff until payload.size - 80)
+        val envelope   = payload.sliceArray(payload.size - 80 until payload.size)
+        if (storedBlob.size < 14) return null
+        return try {
+            val msgKey = openEnvelope(envelope)
+            val nonce  = storedBlob.copyOf(12)
+            val ecLen  = ((storedBlob[12].toInt() and 0xFF)) or ((storedBlob[13].toInt() and 0xFF) shl 8)
+            val plain  = chachaDecrypt(msgKey, nonce, storedBlob.sliceArray(14 until 14 + ecLen))
+            val timeStr = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault())
+                .format(java.util.Date(ts.toLong() * 1000L))
+            ServerEvent.RoomHistoryMsg(id.toLong(), sender, String(plain), timeStr)
+        } catch (_: Exception) { null }
     }
 
     fun destroy() {

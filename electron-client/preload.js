@@ -17,5 +17,27 @@ contextBridge.exposeInMainWorld('api', {
   onServerList: (cb) => ipcRenderer.on('server-list', (_, d) => cb(d)),
   getServerList: () => ipcRenderer.invoke('get-server-list'),
 
-  removeAllListeners: (ch) => ipcRenderer.removeAllListeners(ch)
+  removeAllListeners: (ch) => ipcRenderer.removeAllListeners(ch),
+
+  // Direct messages
+  sendDM: (recipientLogin, text) => ipcRenderer.invoke('send-dm', recipientLogin, text),
+
+  // Rooms
+  createRoom:      (name, isPublic, description) => ipcRenderer.invoke('create-room', name, isPublic, description),
+  joinRoom:        (roomID)            => ipcRenderer.invoke('join-room', roomID),
+  leaveRoom:       (roomID)            => ipcRenderer.invoke('leave-room', roomID),
+  sendRoomMessage: (roomID, text)      => ipcRenderer.invoke('send-room-message', roomID, text),
+  inviteToRoom:    (roomID, username)  => ipcRenderer.invoke('invite-to-room', roomID, username),
+  getRooms:        ()                  => ipcRenderer.invoke('get-rooms'),
+
+  // Room events
+  onDM:            (cb) => ipcRenderer.on('dm',            (_, d) => cb(d)),
+  onDMHistory:     (cb) => ipcRenderer.on('dm-history',    (_, d) => cb(d)),
+  onRoomList:      (cb) => ipcRenderer.on('room-list',     (_, d) => cb(d)),
+  onRoomCreated:   (cb) => ipcRenderer.on('room-created',  (_, d) => cb(d)),
+  onRoomMembers:   (cb) => ipcRenderer.on('room-members',  (_, d) => cb(d)),
+  onRoomMemberAdd: (cb) => ipcRenderer.on('room-member-add', (_, d) => cb(d)),
+  onRoomMemberRem: (cb) => ipcRenderer.on('room-member-rem', (_, d) => cb(d)),
+  onRoomMessage:   (cb) => ipcRenderer.on('room-message',  (_, d) => cb(d)),
+  onRoomHistory:   (cb) => ipcRenderer.on('room-history',  (_, d) => cb(d)),
 });

@@ -17,6 +17,20 @@ import org.json.JSONObject
 
 enum class Screen { LOGIN, CHAT }
 
+data class DMConversation(
+    val partner: String,
+    val messages: List<ChatMessage> = emptyList()
+)
+
+data class RoomState(
+    val id: Long,
+    val name: String,
+    val isPublic: Boolean = false,
+    val owner: String = "",
+    val members: List<String> = emptyList(),
+    val messages: List<ChatMessage> = emptyList()
+)
+
 data class UiState(
     val screen: Screen = Screen.LOGIN,
     val status: String = "",
@@ -26,7 +40,9 @@ data class UiState(
     val onlineUsers: List<String> = emptyList(),
     val myUsername: String = "",
     val config: AppConfig = AppConfig(),
-    val knownServers: List<String> = emptyList()
+    val knownServers: List<String> = emptyList(),
+    val dmConversations: Map<String, List<ChatMessage>> = emptyMap(),
+    val rooms: Map<Long, RoomState> = emptyMap()
 )
 
 class MessengerViewModel(app: Application) : AndroidViewModel(app) {
@@ -190,6 +206,45 @@ class MessengerViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // ---- Send DM ----
+    fun sendDM(recipientLogin: String, text: String) {
+        val trimmed = text.trim()
+        if (trimmed.isEmpty()) return
+        viewModelScope.launch {
+            service?.sendDM(recipientLogin, trimmed)
+            val now = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault())
+                .format(java.util.Date())
+            val msg = ChatMessage(sender = _state.value.myUsername, text = trimmed, time = now, own = true)
+            val updated = _state.value.dmConversations.toMutableMap()
+            updated[recipientLogin] = (updated[recipientLogin] ?: emptyList()) + msg
+            _state.value = _state.value.copy(dmConversations = updated)
+        }
+    }
+
+    // ---- Room actions ----
+    fun createRoom(name: String, isPublic: Boolean, description: String = "") {
+        service?.createRoom(name, isPublic, description)
+    }
+
+    fun joinRoom(roomId: Long) { service?.joinRoom(roomId) }
+    fun leaveRoom(roomId: Long) { service?.leaveRoom(roomId) }
+    fun inviteToRoom(roomId: Long, username: String) { service?.inviteToRoom(roomId, username) }
+
+    fun sendRoomMessage(roomId: Long, text: String) {
+        val trimmed = text.trim()
+        if (trimmed.isEmpty()) return
+        viewModelScope.launch {
+            service?.sendRoomMessage(roomId, trimmed)
+            val now = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault())
+                .format(java.util.Date())
+            val msg = ChatMessage(sender = _state.value.myUsername, text = trimmed, time = now, own = true)
+            val updatedRooms = _state.value.rooms.toMutableMap()
+            val room = updatedRooms[roomId]
+            if (room != null) updatedRooms[roomId] = room.copy(messages = room.messages + msg)
+            _state.value = _state.value.copy(rooms = updatedRooms)
+        }
+    }
+
     // ---- Logout ----
     fun logout() {
         service?.stopConnection()
@@ -199,7 +254,9 @@ class MessengerViewModel(app: Application) : AndroidViewModel(app) {
             onlineUsers = emptyList(),
             myUsername = "",
             status = "",
-            isLoading = false
+            isLoading = false,
+            dmConversations = emptyMap(),
+            rooms = emptyMap()
         )
         startAndBindService()
     }
@@ -247,6 +304,85 @@ class MessengerViewModel(app: Application) : AndroidViewModel(app) {
                     )
                 }
                 startAndBindService()
+            }
+            // DM events
+            is ServerEvent.DMMessage -> {
+                val updated = _state.value.dmConversations.toMutableMap()
+                val now = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault()).format(java.util.Date())
+                val msg = ChatMessage(sender = event.sender, text = event.text, time = event.time, own = false)
+                updated[event.sender] = (updated[event.sender] ?: emptyList()) + msg
+                _state.value = _state.value.copy(dmConversations = updated)
+            }
+            is ServerEvent.DMHistory -> {
+                val partner = if (event.sender == _state.value.myUsername) event.recipient else event.sender
+                val updated = _state.value.dmConversations.toMutableMap()
+                val own = event.sender == _state.value.myUsername
+                val msg = ChatMessage(sender = event.sender, text = event.text, time = event.time, own = own)
+                updated[partner] = (updated[partner] ?: emptyList()) + msg
+                _state.value = _state.value.copy(dmConversations = updated)
+            }
+            // Room events
+            is ServerEvent.RoomList -> {
+                val updatedRooms = _state.value.rooms.toMutableMap()
+                for (info in event.rooms) {
+                    if (!updatedRooms.containsKey(info.id)) {
+                        updatedRooms[info.id] = RoomState(info.id, info.name, info.isPublic, info.owner)
+                    }
+                }
+                _state.value = _state.value.copy(rooms = updatedRooms)
+            }
+            is ServerEvent.RoomInfo -> {
+                val updatedRooms = _state.value.rooms.toMutableMap()
+                val existing = updatedRooms[event.id]
+                updatedRooms[event.id] = existing?.copy(name = event.name, isPublic = event.isPublic, owner = event.owner)
+                    ?: RoomState(event.id, event.name, event.isPublic, event.owner)
+                _state.value = _state.value.copy(rooms = updatedRooms)
+            }
+            is ServerEvent.RoomMembers -> {
+                val updatedRooms = _state.value.rooms.toMutableMap()
+                val room = updatedRooms[event.roomId]
+                if (room != null) updatedRooms[event.roomId] = room.copy(members = event.members)
+                _state.value = _state.value.copy(rooms = updatedRooms)
+            }
+            is ServerEvent.RoomMemberAdd -> {
+                val updatedRooms = _state.value.rooms.toMutableMap()
+                val room = updatedRooms[event.roomId]
+                if (room != null && !room.members.contains(event.login)) {
+                    updatedRooms[event.roomId] = room.copy(members = room.members + event.login)
+                }
+                _state.value = _state.value.copy(rooms = updatedRooms)
+            }
+            is ServerEvent.RoomMemberRem -> {
+                val updatedRooms = _state.value.rooms.toMutableMap()
+                val room = updatedRooms[event.roomId]
+                if (room != null) {
+                    if (event.login == _state.value.myUsername) {
+                        updatedRooms.remove(event.roomId)
+                    } else {
+                        updatedRooms[event.roomId] = room.copy(members = room.members.filter { it != event.login })
+                    }
+                }
+                _state.value = _state.value.copy(rooms = updatedRooms)
+            }
+            is ServerEvent.RoomMessage -> {
+                val updatedRooms = _state.value.rooms.toMutableMap()
+                val room = updatedRooms[event.roomId]
+                if (room != null) {
+                    val own = event.sender == _state.value.myUsername
+                    val msg = ChatMessage(sender = event.sender, text = event.text, time = event.time, own = own)
+                    updatedRooms[event.roomId] = room.copy(messages = room.messages + msg)
+                }
+                _state.value = _state.value.copy(rooms = updatedRooms)
+            }
+            is ServerEvent.RoomHistoryMsg -> {
+                val updatedRooms = _state.value.rooms.toMutableMap()
+                val room = updatedRooms[event.roomId]
+                if (room != null) {
+                    val own = event.sender == _state.value.myUsername
+                    val msg = ChatMessage(sender = event.sender, text = event.text, time = event.time, own = own)
+                    updatedRooms[event.roomId] = room.copy(messages = room.messages + msg)
+                }
+                _state.value = _state.value.copy(rooms = updatedRooms)
             }
         }
     }

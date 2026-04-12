@@ -62,6 +62,12 @@ class MessengerService : Service() {
     }
 
     suspend fun sendMessage(text: String) = client.sendMessage(text)
+    suspend fun sendDM(recipientLogin: String, text: String) = client.sendDM(recipientLogin, text)
+    fun createRoom(name: String, isPublic: Boolean, description: String = "") = client.createRoom(name, isPublic, description)
+    fun joinRoom(roomId: Long) = client.joinRoom(roomId)
+    fun leaveRoom(roomId: Long) = client.leaveRoom(roomId)
+    fun inviteToRoom(roomId: Long, username: String) = client.inviteToRoom(roomId, username)
+    fun sendRoomMessage(roomId: Long, text: String) = client.sendRoomMessage(roomId, text)
 
     fun setUsername(username: String) { myUsername = username }
 

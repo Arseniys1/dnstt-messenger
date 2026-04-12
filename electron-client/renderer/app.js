@@ -1,19 +1,46 @@
 'use strict';
 
-// --- State ---
+// ─── State ────────────────────────────────────────────────────────────────────
 let myUsername = '';
-let connected = false;
+let connected  = false;
 
-// --- DOM refs ---
+// currentView: { type: 'global' | 'dm' | 'room', id: null | username | roomID }
+let currentView = { type: 'global', id: null };
+
+// Message stores: key → [{sender,text,time}]
+const msgStore = {
+  global: [],
+  dm: new Map(),     // username → []
+  room: new Map(),   // roomID   → []
+};
+
+// Unread counts
+const unread = {
+  dm:   new Map(), // username → count
+  room: new Map(), // roomID   → count
+};
+
+// Known rooms: id → { name, isPublic, owner, members: Set }
+const rooms = new Map();
+
+// Known DM partners (to show in sidebar even before history loads)
+const dmPartners = new Set();
+
+// ─── DOM ─────────────────────────────────────────────────────────────────────
 const screenConnect = document.getElementById('screen-connect');
 const screenChat    = document.getElementById('screen-chat');
-const status        = document.getElementById('connect-status');
-const onlineList    = document.getElementById('online-list');
-const messages      = document.getElementById('messages');
+const statusEl      = document.getElementById('connect-status');
+const onlineListEl  = document.getElementById('online-list');
+const messagesEl    = document.getElementById('messages');
 const msgInput      = document.getElementById('msg-input');
 const myUsernameEl  = document.getElementById('my-username');
+const chatTitle     = document.getElementById('chat-title');
+const chatActions   = document.getElementById('chat-header-actions');
+const dmListEl      = document.getElementById('dm-list');
+const roomListEl    = document.getElementById('room-list-sidebar');
+const navGlobal     = document.getElementById('nav-global');
 
-// --- Tabs ---
+// ─── Connect-screen tabs ─────────────────────────────────────────────────────
 document.querySelectorAll('.tab').forEach(btn => {
   btn.addEventListener('click', () => {
     document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
@@ -23,45 +50,38 @@ document.querySelectorAll('.tab').forEach(btn => {
   });
 });
 
-// --- Load config ---
+// ─── Load / save config ──────────────────────────────────────────────────────
 window.api.getConfig().then(cfg => {
-  document.getElementById('cfg-server').value  = cfg.server_addr  || '';
-  document.getElementById('cfg-proxy').value   = cfg.proxy_addr   || '';
+  document.getElementById('cfg-server').value   = cfg.server_addr  || '';
+  document.getElementById('cfg-proxy').value    = cfg.proxy_addr   || '';
   document.getElementById('cfg-direct').checked = !!cfg.direct_mode;
 });
 
-// --- Save config ---
 document.getElementById('btn-save-cfg').addEventListener('click', async () => {
   const cfg = {
     server_addr: document.getElementById('cfg-server').value.trim(),
     proxy_addr:  document.getElementById('cfg-proxy').value.trim(),
-    direct_mode: document.getElementById('cfg-direct').checked
+    direct_mode: document.getElementById('cfg-direct').checked,
   };
   await window.api.saveConfig(cfg);
   setStatus('Настройки сохранены', 'ok');
 });
 
-// --- Register ---
+// ─── Register ────────────────────────────────────────────────────────────────
 document.getElementById('btn-register').addEventListener('click', async () => {
   const login = document.getElementById('reg-user').value.trim();
   const pass  = document.getElementById('reg-pass').value.trim();
   if (!login || !pass) { setStatus('Заполните все поля', 'error'); return; }
-
   setStatus('Подключение...');
-  const cfg = await window.api.getConfig();
+  const cfg  = await window.api.getConfig();
   const conn = await window.api.connect(cfg);
   if (!conn.ok) { setStatus('Ошибка: ' + conn.error, 'error'); return; }
-
   const res = await window.api.register(login, pass);
   await window.api.disconnect();
-  if (res.ok) {
-    setStatus('Аккаунт создан! Теперь войдите.', 'ok');
-  } else {
-    setStatus('Логин уже занят', 'error');
-  }
+  setStatus(res.ok ? 'Аккаунт создан! Теперь войдите.' : 'Логин уже занят', res.ok ? 'ok' : 'error');
 });
 
-// --- Login ---
+// ─── Login ───────────────────────────────────────────────────────────────────
 document.getElementById('btn-login').addEventListener('click', doLogin);
 document.getElementById('login-pass').addEventListener('keydown', e => {
   if (e.key === 'Enter') doLogin();
@@ -71,58 +91,58 @@ async function doLogin() {
   const login = document.getElementById('login-user').value.trim();
   const pass  = document.getElementById('login-pass').value.trim();
   if (!login || !pass) { setStatus('Заполните все поля', 'error'); return; }
-
   setStatus('Подключение...');
-  const cfg = await window.api.getConfig();
+  const cfg  = await window.api.getConfig();
   const conn = await window.api.connect(cfg);
   if (!conn.ok) { setStatus('Ошибка подключения: ' + conn.error, 'error'); return; }
-
   setStatus('Авторизация...');
   registerListeners();
-
   const res = await window.api.login(login, pass);
   if (!res.ok) {
     setStatus('Неверный логин или пароль', 'error');
     await window.api.disconnect();
     return;
   }
-
   myUsername = login;
-  connected = true;
+  connected  = true;
   showChat();
 }
 
-// --- IPC listeners ---
+// ─── IPC listeners ───────────────────────────────────────────────────────────
 function registerListeners() {
-  ['message','online-list','history','history-end','disconnected','server-list'].forEach(ch =>
-    window.api.removeAllListeners(ch)
-  );
+  const channels = [
+    'message','online-list','history','history-end','disconnected','server-list',
+    'dm','dm-history','room-list','room-created','room-members',
+    'room-member-add','room-member-rem','room-message','room-history',
+  ];
+  channels.forEach(ch => window.api.removeAllListeners(ch));
 
   window.api.onServerList(servers => renderKnownServers(servers));
 
+  // ── Global chat ──
   window.api.onHistory(msg => {
-    appendMessage(msg.sender, msg.text, msg.time, msg.sender === myUsername);
+    msgStore.global.push(msg);
+    if (currentView.type === 'global') appendMessage(msg.sender, msg.text, msg.time, msg.sender === myUsername);
   });
 
   window.api.onHistoryEnd(() => {
-    appendDivider('— конец истории —');
+    if (currentView.type === 'global') appendDivider('— конец истории —');
     scrollBottom();
   });
 
   window.api.onMessage(({ sender, text, time }) => {
-    if (sender === myUsername) return; // уже показали при отправке
-    appendMessage(sender, text, time, false);
-    scrollBottom();
+    if (sender === myUsername) return;
+    const msg = { sender, text, time };
+    msgStore.global.push(msg);
+    if (currentView.type === 'global') {
+      appendMessage(sender, text, time, false);
+      scrollBottom();
+    } else {
+      bumpUnread('global');
+    }
   });
 
-  window.api.onOnlineList(users => {
-    onlineList.innerHTML = '';
-    users.forEach(u => {
-      const li = document.createElement('li');
-      li.textContent = u;
-      onlineList.appendChild(li);
-    });
-  });
+  window.api.onOnlineList(users => renderOnlineList(users));
 
   window.api.onDisconnected(() => {
     if (connected) {
@@ -131,14 +151,358 @@ function registerListeners() {
       setStatus('Соединение разорвано', 'error');
     }
   });
+
+  // ── Direct messages ──
+  window.api.onDMHistory(({ sender, recipient, text, time }) => {
+    const partner = sender === myUsername ? recipient : sender;
+    if (!dmPartners.has(partner)) {
+      dmPartners.add(partner);
+      renderDMList();
+    }
+    const arr = getOrCreate(msgStore.dm, partner);
+    arr.push({ sender, text, time });
+    if (currentView.type === 'dm' && currentView.id === partner) {
+      appendMessage(sender, text, time, sender === myUsername);
+    }
+  });
+
+  window.api.onDM(({ sender, text, time }) => {
+    if (!dmPartners.has(sender)) {
+      dmPartners.add(sender);
+      renderDMList();
+    }
+    const arr = getOrCreate(msgStore.dm, sender);
+    arr.push({ sender, text, time });
+    if (currentView.type === 'dm' && currentView.id === sender) {
+      appendMessage(sender, text, time, false);
+      scrollBottom();
+    } else {
+      bumpUnread('dm', sender);
+    }
+  });
+
+  // ── Rooms ──
+  window.api.onRoomList(roomsArr => {
+    roomsArr.forEach(r => {
+      if (!rooms.has(r.id)) rooms.set(r.id, { name: r.name, isPublic: r.isPublic, owner: r.owner, members: new Set() });
+    });
+    renderRoomList();
+  });
+
+  window.api.onRoomCreated(({ id, name, isPublic, owner, inviter }) => {
+    if (!rooms.has(id)) rooms.set(id, { name, isPublic, owner, members: new Set() });
+    renderRoomList();
+    if (inviter) appendSystemMsg(`Вас пригласил в комнату #${name} пользователь ${inviter}`);
+  });
+
+  window.api.onRoomMembers(({ id, members }) => {
+    const room = rooms.get(id);
+    if (room) room.members = new Set(members.map(m => m.login));
+    if (currentView.type === 'room' && currentView.id === id) renderRoomHeader(id);
+  });
+
+  window.api.onRoomMemberAdd(({ id, login }) => {
+    const room = rooms.get(id);
+    if (room) room.members.add(login);
+    if (currentView.type === 'room' && currentView.id === id) {
+      renderRoomHeader(id);
+      appendSystemMsg(`${login} вошёл в комнату`);
+    }
+  });
+
+  window.api.onRoomMemberRem(({ id, login }) => {
+    const room = rooms.get(id);
+    if (room) room.members.delete(login);
+    if (login === myUsername) {
+      // we were removed / left
+      rooms.delete(id);
+      renderRoomList();
+      if (currentView.type === 'room' && currentView.id === id) switchView('global');
+    } else if (currentView.type === 'room' && currentView.id === id) {
+      renderRoomHeader(id);
+      appendSystemMsg(`${login} покинул комнату`);
+    }
+  });
+
+  window.api.onRoomHistory(({ roomID, sender, text, time }) => {
+    const arr = getOrCreate(msgStore.room, roomID);
+    arr.push({ sender, text, time });
+    if (currentView.type === 'room' && currentView.id === roomID) {
+      appendMessage(sender, text, time, sender === myUsername);
+    }
+  });
+
+  window.api.onRoomMessage(({ roomID, sender, text, time }) => {
+    if (sender === myUsername) return;
+    const arr = getOrCreate(msgStore.room, roomID);
+    arr.push({ sender, text, time });
+    if (currentView.type === 'room' && currentView.id === roomID) {
+      appendMessage(sender, text, time, false);
+      scrollBottom();
+    } else {
+      bumpUnread('room', roomID);
+    }
+  });
 }
 
-// --- Chat UI ---
+// ─── Navigation ───────────────────────────────────────────────────────────────
+navGlobal.addEventListener('click', () => switchView('global'));
+
+function switchView(type, id) {
+  currentView = { type, id: id ?? null };
+  messagesEl.innerHTML = '';
+
+  // Sidebar active states
+  navGlobal.classList.toggle('active', type === 'global');
+  document.querySelectorAll('.dm-item').forEach(el => {
+    el.classList.toggle('active', type === 'dm' && el.dataset.user === id);
+  });
+  document.querySelectorAll('.room-item').forEach(el => {
+    el.classList.toggle('active', type === 'room' && Number(el.dataset.roomid) === id);
+  });
+
+  if (type === 'global') {
+    chatTitle.textContent = '# Общий чат';
+    chatActions.innerHTML = '';
+    msgStore.global.forEach(m => appendMessage(m.sender, m.text, m.time, m.sender === myUsername));
+    unread.global = 0;
+
+  } else if (type === 'dm') {
+    chatTitle.textContent = `💬 ${id}`;
+    chatActions.innerHTML = '';
+    (msgStore.dm.get(id) || []).forEach(m => appendMessage(m.sender, m.text, m.time, m.sender === myUsername));
+    unread.dm.delete(id);
+    renderDMList();
+
+  } else if (type === 'room') {
+    const room = rooms.get(id);
+    // Auto-join public rooms when the user clicks on them
+    if (room && room.isPublic && !room.members.has(myUsername)) {
+      window.api.joinRoom(id);
+    }
+    chatTitle.textContent = room ? `# ${room.name}` : `# Комната ${id}`;
+    renderRoomHeader(id);
+    (msgStore.room.get(id) || []).forEach(m => appendMessage(m.sender, m.text, m.time, m.sender === myUsername));
+    unread.room.delete(id);
+    renderRoomList();
+  }
+
+  appendDivider('— конец истории —');
+  scrollBottom();
+}
+
+function renderRoomHeader(roomID) {
+  const room = rooms.get(roomID);
+  if (!room) return;
+  chatActions.innerHTML = '';
+
+  const inviteBtn = document.createElement('button');
+  inviteBtn.className = 'btn-header-action';
+  inviteBtn.textContent = 'Пригласить';
+  inviteBtn.addEventListener('click', () => openInviteModal(roomID));
+  chatActions.appendChild(inviteBtn);
+
+  const leaveBtn = document.createElement('button');
+  leaveBtn.className = 'btn-header-action danger';
+  leaveBtn.textContent = 'Покинуть';
+  leaveBtn.addEventListener('click', async () => {
+    await window.api.leaveRoom(roomID);
+  });
+  chatActions.appendChild(leaveBtn);
+}
+
+// ─── Sidebar renders ──────────────────────────────────────────────────────────
+function renderDMList() {
+  dmListEl.innerHTML = '';
+  for (const partner of dmPartners) {
+    const li = document.createElement('li');
+    li.className = 'dm-item' + (currentView.type === 'dm' && currentView.id === partner ? ' active' : '');
+    li.dataset.user = partner;
+    li.textContent = partner;
+    const cnt = unread.dm.get(partner) || 0;
+    if (cnt > 0) {
+      const badge = document.createElement('span');
+      badge.className = 'unread-badge';
+      badge.textContent = cnt;
+      li.appendChild(badge);
+    }
+    li.addEventListener('click', () => switchView('dm', partner));
+    dmListEl.appendChild(li);
+  }
+}
+
+function renderRoomList() {
+  roomListEl.innerHTML = '';
+  for (const [id, room] of rooms) {
+    const li = document.createElement('li');
+    li.className = 'room-item' + (currentView.type === 'room' && currentView.id === id ? ' active' : '');
+    li.dataset.roomid = id;
+    const prefix = room.isPublic ? '🌐' : '🔒';
+    li.textContent = `${prefix} ${room.name}`;
+    const cnt = unread.room.get(id) || 0;
+    if (cnt > 0) {
+      const badge = document.createElement('span');
+      badge.className = 'unread-badge';
+      badge.textContent = cnt;
+      li.appendChild(badge);
+    }
+    li.addEventListener('click', () => switchView('room', id));
+    roomListEl.appendChild(li);
+  }
+}
+
+function renderOnlineList(users) {
+  onlineListEl.innerHTML = '';
+  users.forEach(u => {
+    const li = document.createElement('li');
+    li.textContent = u;
+    onlineListEl.appendChild(li);
+  });
+}
+
+// ─── Send message (context-aware) ────────────────────────────────────────────
+document.getElementById('btn-send').addEventListener('click', sendMsg);
+msgInput.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMsg(); }
+});
+
+function sendMsg() {
+  const text = msgInput.value.trim();
+  if (!text || !connected) return;
+  const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+  if (currentView.type === 'global') {
+    window.api.sendMessage(text);
+    const msg = { sender: myUsername, text, time: now };
+    msgStore.global.push(msg);
+    appendMessage(myUsername, text, now, true);
+
+  } else if (currentView.type === 'dm') {
+    window.api.sendDM(currentView.id, text);
+    const arr = getOrCreate(msgStore.dm, currentView.id);
+    const msg = { sender: myUsername, text, time: now };
+    arr.push(msg);
+    appendMessage(myUsername, text, now, true);
+
+  } else if (currentView.type === 'room') {
+    window.api.sendRoomMessage(currentView.id, text);
+    const arr = getOrCreate(msgStore.room, currentView.id);
+    const msg = { sender: myUsername, text, time: now };
+    arr.push(msg);
+    appendMessage(myUsername, text, now, true);
+  }
+
+  scrollBottom();
+  msgInput.value = '';
+  msgInput.style.height = 'auto';
+}
+
+msgInput.addEventListener('input', () => {
+  msgInput.style.height = 'auto';
+  msgInput.style.height = Math.min(msgInput.scrollHeight, 120) + 'px';
+});
+
+// ─── Modal: New DM ───────────────────────────────────────────────────────────
+document.getElementById('btn-new-dm').addEventListener('click', () => {
+  document.getElementById('dm-target-user').value = '';
+  document.getElementById('modal-dm').classList.remove('hidden');
+  document.getElementById('dm-target-user').focus();
+});
+document.getElementById('btn-dm-cancel').addEventListener('click', () => {
+  document.getElementById('modal-dm').classList.add('hidden');
+});
+document.getElementById('btn-dm-open').addEventListener('click', openDM);
+document.getElementById('dm-target-user').addEventListener('keydown', e => {
+  if (e.key === 'Enter') openDM();
+});
+
+function openDM() {
+  const user = document.getElementById('dm-target-user').value.trim();
+  if (!user) return;
+  document.getElementById('modal-dm').classList.add('hidden');
+  if (!dmPartners.has(user)) {
+    dmPartners.add(user);
+    renderDMList();
+  }
+  switchView('dm', user);
+}
+
+// ─── Modal: Create room ───────────────────────────────────────────────────────
+document.getElementById('btn-create-room').addEventListener('click', () => {
+  document.getElementById('room-name-input').value = '';
+  document.getElementById('room-desc-input').value = '';
+  document.getElementById('room-public-check').checked = false;
+  document.getElementById('modal-create-room').classList.remove('hidden');
+  document.getElementById('room-name-input').focus();
+});
+document.getElementById('btn-create-room-cancel').addEventListener('click', () => {
+  document.getElementById('modal-create-room').classList.add('hidden');
+});
+document.getElementById('btn-create-room-ok').addEventListener('click', doCreateRoom);
+document.getElementById('room-name-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter') doCreateRoom();
+});
+
+async function doCreateRoom() {
+  const name  = document.getElementById('room-name-input').value.trim();
+  const desc  = document.getElementById('room-desc-input').value.trim();
+  const pub   = document.getElementById('room-public-check').checked;
+  if (!name) return;
+  document.getElementById('modal-create-room').classList.add('hidden');
+  await window.api.createRoom(name, pub, desc);
+}
+
+// ─── Modal: Invite to room ────────────────────────────────────────────────────
+let _inviteRoomID = null;
+function openInviteModal(roomID) {
+  _inviteRoomID = roomID;
+  document.getElementById('invite-username').value = '';
+  document.getElementById('modal-invite').classList.remove('hidden');
+  document.getElementById('invite-username').focus();
+}
+document.getElementById('btn-invite-cancel').addEventListener('click', () => {
+  document.getElementById('modal-invite').classList.add('hidden');
+});
+document.getElementById('btn-invite-ok').addEventListener('click', doInvite);
+document.getElementById('invite-username').addEventListener('keydown', e => {
+  if (e.key === 'Enter') doInvite();
+});
+
+async function doInvite() {
+  const user = document.getElementById('invite-username').value.trim();
+  if (!user || _inviteRoomID === null) return;
+  document.getElementById('modal-invite').classList.add('hidden');
+  await window.api.inviteToRoom(_inviteRoomID, user);
+  _inviteRoomID = null;
+}
+
+// ─── Logout ───────────────────────────────────────────────────────────────────
+document.getElementById('btn-logout').addEventListener('click', async () => {
+  connected = false;
+  await window.api.disconnect();
+  showConnect();
+  setStatus('');
+  onlineListEl.innerHTML = '';
+  dmListEl.innerHTML     = '';
+  roomListEl.innerHTML   = '';
+  msgStore.global = [];
+  msgStore.dm.clear();
+  msgStore.room.clear();
+  rooms.clear();
+  dmPartners.clear();
+  unread.dm.clear();
+  unread.room.clear();
+  currentView = { type: 'global', id: null };
+});
+
+// ─── UI helpers ──────────────────────────────────────────────────────────────
 function showChat() {
   screenConnect.classList.remove('active');
   screenChat.classList.add('active');
   myUsernameEl.textContent = myUsername;
-  messages.innerHTML = '';
+  messagesEl.innerHTML = '';
+  navGlobal.classList.add('active');
+  chatTitle.textContent = '# Общий чат';
 }
 
 function showConnect() {
@@ -150,23 +514,31 @@ function appendMessage(sender, text, time, own) {
   const div = document.createElement('div');
   div.className = 'msg ' + (own ? 'own' : 'other');
   div.innerHTML = `<div class="meta">${escHtml(own ? 'Вы' : sender)} · ${escHtml(time)}</div>${escHtml(text)}`;
-  messages.appendChild(div);
+  messagesEl.appendChild(div);
 }
 
 function appendDivider(text) {
   const div = document.createElement('div');
   div.className = 'divider';
   div.textContent = text;
-  messages.appendChild(div);
+  messagesEl.appendChild(div);
+}
+
+function appendSystemMsg(text) {
+  const div = document.createElement('div');
+  div.className = 'divider';
+  div.textContent = text;
+  messagesEl.appendChild(div);
+  scrollBottom();
 }
 
 function scrollBottom() {
-  messages.scrollTop = messages.scrollHeight;
+  messagesEl.scrollTop = messagesEl.scrollHeight;
 }
 
 function setStatus(msg, type = '') {
-  status.textContent = msg;
-  status.className = 'status ' + type;
+  statusEl.textContent = msg;
+  statusEl.className   = 'status ' + type;
 }
 
 function escHtml(s) {
@@ -177,33 +549,24 @@ function escHtml(s) {
     .replace(/"/g, '&quot;');
 }
 
-// --- Send message ---
-document.getElementById('btn-send').addEventListener('click', sendMsg);
-msgInput.addEventListener('keydown', e => {
-  if (e.key === 'Enter' && !e.shiftKey) {
-    e.preventDefault();
-    sendMsg();
-  }
-});
-
-function sendMsg() {
-  const text = msgInput.value.trim();
-  if (!text || !connected) return;
-  window.api.sendMessage(text);
-  const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  appendMessage(myUsername, text, now, true);
-  scrollBottom();
-  msgInput.value = '';
-  msgInput.style.height = 'auto';
+function getOrCreate(map, key) {
+  if (!map.has(key)) map.set(key, []);
+  return map.get(key);
 }
 
-// Auto-resize textarea
-msgInput.addEventListener('input', () => {
-  msgInput.style.height = 'auto';
-  msgInput.style.height = Math.min(msgInput.scrollHeight, 120) + 'px';
-});
+function bumpUnread(type, id) {
+  if (type === 'global') {
+    // show badge on global nav item
+  } else if (type === 'dm') {
+    unread.dm.set(id, (unread.dm.get(id) || 0) + 1);
+    renderDMList();
+  } else if (type === 'room') {
+    unread.room.set(id, (unread.room.get(id) || 0) + 1);
+    renderRoomList();
+  }
+}
 
-// --- Known servers list (federation) ---
+// ─── Known servers ────────────────────────────────────────────────────────────
 function renderKnownServers(servers) {
   const container = document.getElementById('server-list-container');
   if (!container) return;
@@ -214,19 +577,18 @@ function renderKnownServers(servers) {
   }
   servers.forEach(addr => {
     const btn = document.createElement('button');
-    btn.className = 'btn-server';
+    btn.className   = 'btn-server';
     btn.textContent = addr;
-    btn.title = 'Подключиться к ' + addr;
+    btn.title       = 'Подключиться к ' + addr;
     btn.addEventListener('click', async () => {
-      document.getElementById('cfg-server').value = addr;
+      document.getElementById('cfg-server').value  = addr;
       document.getElementById('cfg-direct').checked = true;
       const cfg = {
         server_addr: addr,
         proxy_addr:  document.getElementById('cfg-proxy').value.trim(),
-        direct_mode: true
+        direct_mode: true,
       };
       await window.api.saveConfig(cfg);
-      // Switch to settings tab so user sees the update
       document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
       document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
       document.querySelector('.tab[data-tab="settings"]').classList.add('active');
@@ -236,12 +598,3 @@ function renderKnownServers(servers) {
     container.appendChild(btn);
   });
 }
-
-// --- Logout ---
-document.getElementById('btn-logout').addEventListener('click', async () => {
-  connected = false;
-  await window.api.disconnect();
-  showConnect();
-  setStatus('');
-  onlineList.innerHTML = '';
-});

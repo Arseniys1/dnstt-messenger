@@ -85,6 +85,27 @@ ipcMain.handle('connect', async (_, cfg) => {
   client.on('server-list', (servers) => {
     win.webContents.send('server-list', servers);
   });
+  client.on('dm', (data) => {
+    win.webContents.send('dm', data);
+    if (win.isMinimized() || !win.isVisible()) {
+      new Notification({ title: `💬 ${data.sender}`, body: data.text.length > 100 ? data.text.slice(0, 100) + '…' : data.text }).show();
+    }
+  });
+  client.on('dm-history', (data) => { win.webContents.send('dm-history', data); });
+  client.on('room-list',  (rooms) => { win.webContents.send('room-list', rooms); });
+  client.on('room-created', (data) => { win.webContents.send('room-created', data); });
+  client.on('room-members', (data) => { win.webContents.send('room-members', data); });
+  client.on('room-member-add', (data) => { win.webContents.send('room-member-add', data); });
+  client.on('room-member-rem', (data) => { win.webContents.send('room-member-rem', data); });
+  client.on('room-message', (data) => {
+    win.webContents.send('room-message', data);
+    if (win.isMinimized() || !win.isVisible()) {
+      const room = client._rooms.get(data.roomID);
+      const title = room ? `#${room.name}` : `Room`;
+      new Notification({ title: `${title} · ${data.sender}`, body: data.text.length > 100 ? data.text.slice(0, 100) + '…' : data.text }).show();
+    }
+  });
+  client.on('room-history', (data) => { win.webContents.send('room-history', data); });
 
   return client.connect();
 });
@@ -111,4 +132,46 @@ ipcMain.handle('disconnect', async () => {
 
 ipcMain.handle('get-server-list', () => {
   return client ? client._knownServers : [];
+});
+
+ipcMain.handle('send-dm', async (_, recipientLogin, text) => {
+  if (!client) return false;
+  return client.sendDM(recipientLogin, text);
+});
+
+ipcMain.handle('create-room', async (_, name, isPublic, description) => {
+  if (!client) return false;
+  client.createRoom(name, isPublic, description);
+  return true;
+});
+
+ipcMain.handle('join-room', async (_, roomID) => {
+  if (!client) return false;
+  client.joinRoom(roomID);
+  return true;
+});
+
+ipcMain.handle('leave-room', async (_, roomID) => {
+  if (!client) return false;
+  client.leaveRoom(roomID);
+  return true;
+});
+
+ipcMain.handle('send-room-message', async (_, roomID, text) => {
+  if (!client) return false;
+  return client.sendRoomMessage(roomID, text);
+});
+
+ipcMain.handle('invite-to-room', async (_, roomID, username) => {
+  if (!client) return false;
+  client.inviteToRoom(roomID, username);
+  return true;
+});
+
+ipcMain.handle('get-rooms', () => {
+  if (!client) return [];
+  return [...client._rooms.entries()].map(([id, r]) => ({
+    id, name: r.name, isPublic: r.isPublic, owner: r.owner,
+    members: [...r.members],
+  }));
 });

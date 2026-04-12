@@ -43,12 +43,17 @@ var (
 	e2ePubKey  *ecdh.PublicKey
 
 	// pubkey cache: login → 32-byte X25519 pubkey
-	pubkeyMu    sync.RWMutex
+	pubkeyMu     sync.RWMutex
 	knownPubkeys = make(map[string][]byte)
 
 	// messages queued while waiting for missing pubkeys
 	pendingMu       sync.Mutex
 	pendingMessages []string
+
+	// Room state: id → name, id → member logins
+	roomsMu    sync.RWMutex
+	rooms      = make(map[uint32]string)   // roomID → name
+	roomMembersMap = make(map[uint32][]string) // roomID → []login
 )
 
 const (
@@ -70,6 +75,23 @@ const (
 	CmdE2EMsg           = 0x12
 	CmdE2EIncoming      = 0x13
 	CmdE2EHistory       = 0x14
+	// Direct messages
+	CmdDM         = 0x15
+	CmdDMIncoming = 0x16
+	CmdDMHistory  = 0x17
+	// Rooms
+	CmdCreateRoom      = 0x18
+	CmdRoomCreated     = 0x19
+	CmdRoomList        = 0x1A
+	CmdJoinRoom        = 0x1B
+	CmdLeaveRoom       = 0x1C
+	CmdRoomMsg         = 0x1D
+	CmdRoomMsgIncoming = 0x1E
+	CmdRoomHistory     = 0x1F
+	CmdRoomInvite      = 0x20
+	CmdRoomMembers     = 0x21
+	CmdRoomMemberAdd   = 0x22
+	CmdRoomMemberRem   = 0x23
 )
 
 func main() {
@@ -178,7 +200,10 @@ func main() {
 		break
 	}
 
-	fmt.Println("✅ Авторизация успешна! (/exit для выхода, /servers — список серверов сети)")
+	fmt.Println("✅ Авторизация успешна! (/exit — выход, /servers — серверы, /dm <user> <text> — личное сообщение,")
+	fmt.Println("   /rooms — список комнат, /join <id> — войти в комнату, /leave <id> — покинуть,")
+	fmt.Println("   /create <name> [pub] — создать комнату, /room <id> <text> — сообщение в комнату,")
+	fmt.Println("   /invite <roomID> <user> — пригласить)")
 
 	reader2 := bufio.NewReader(os.Stdin)
 	for {
@@ -197,6 +222,93 @@ func main() {
 					fmt.Printf("  %d. %s\n", i+1, s)
 				}
 			}
+			continue
+		}
+		if text == "/rooms" {
+			roomsMu.RLock()
+			if len(rooms) == 0 {
+				fmt.Println("🏠 Нет доступных комнат.")
+			} else {
+				fmt.Printf("🏠 Комнаты (%d):\n", len(rooms))
+				for id, name := range rooms {
+					fmt.Printf("  [%d] %s\n", id, name)
+				}
+			}
+			roomsMu.RUnlock()
+			continue
+		}
+		// /dm <user> <text>
+		if strings.HasPrefix(text, "/dm ") {
+			parts := strings.SplitN(text[4:], " ", 2)
+			if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
+				fmt.Println("Использование: /dm <user> <text>")
+				continue
+			}
+			sendDM(parts[0], parts[1])
+			continue
+		}
+		// /join <roomID>
+		if strings.HasPrefix(text, "/join ") {
+			idStr := strings.TrimSpace(text[6:])
+			var id uint32
+			if _, err := fmt.Sscanf(idStr, "%d", &id); err != nil {
+				fmt.Println("Использование: /join <roomID>")
+				continue
+			}
+			sendJoinRoom(id)
+			continue
+		}
+		// /leave <roomID>
+		if strings.HasPrefix(text, "/leave ") {
+			idStr := strings.TrimSpace(text[7:])
+			var id uint32
+			if _, err := fmt.Sscanf(idStr, "%d", &id); err != nil {
+				fmt.Println("Использование: /leave <roomID>")
+				continue
+			}
+			sendLeaveRoom(id)
+			continue
+		}
+		// /create <name> [pub]
+		if strings.HasPrefix(text, "/create ") {
+			args := strings.Fields(text[8:])
+			if len(args) == 0 {
+				fmt.Println("Использование: /create <name> [pub]")
+				continue
+			}
+			name := args[0]
+			isPublic := len(args) > 1 && args[1] == "pub"
+			sendCreateRoom(name, isPublic, "")
+			continue
+		}
+		// /room <roomID> <text>
+		if strings.HasPrefix(text, "/room ") {
+			parts := strings.SplitN(text[6:], " ", 2)
+			if len(parts) < 2 {
+				fmt.Println("Использование: /room <roomID> <text>")
+				continue
+			}
+			var id uint32
+			if _, err := fmt.Sscanf(parts[0], "%d", &id); err != nil {
+				fmt.Println("Использование: /room <roomID> <text>")
+				continue
+			}
+			sendRoomMessage(id, parts[1])
+			continue
+		}
+		// /invite <roomID> <user>
+		if strings.HasPrefix(text, "/invite ") {
+			parts := strings.Fields(text[8:])
+			if len(parts) < 2 {
+				fmt.Println("Использование: /invite <roomID> <user>")
+				continue
+			}
+			var id uint32
+			if _, err := fmt.Sscanf(parts[0], "%d", &id); err != nil {
+				fmt.Println("Использование: /invite <roomID> <user>")
+				continue
+			}
+			sendRoomInvite(id, parts[1])
 			continue
 		}
 		if text == "" {
@@ -666,6 +778,33 @@ func readLoop(loginDone chan bool, historyDone chan struct{}) {
 				if len(servers) > 0 {
 					fmt.Printf("\n📡 Серверы сети (%d): %s\n>> ", len(servers), strings.Join(servers, ", "))
 				}
+
+			case CmdDMIncoming:
+				handleDMIncoming(payload)
+
+			case CmdDMHistory:
+				handleDMHistory(payload)
+
+			case CmdRoomList:
+				handleRoomList(payload)
+
+			case CmdRoomCreated:
+				handleRoomCreated(payload)
+
+			case CmdRoomMembers:
+				handleRoomMembers(payload)
+
+			case CmdRoomMemberAdd:
+				handleRoomMemberAdd(payload)
+
+			case CmdRoomMemberRem:
+				handleRoomMemberRem(payload)
+
+			case CmdRoomMsgIncoming:
+				handleRoomMsgIncoming(payload)
+
+			case CmdRoomHistory:
+				handleRoomHistory(payload)
 			}
 		}
 	}
@@ -911,4 +1050,495 @@ func loadConfig(path string) {
 	} else {
 		fmt.Println("⚠️ Конфиг не найден, использую настройки по умолчанию.")
 	}
+}
+
+// ─── Direct Messages ─────────────────────────────────────────────────────────
+
+// sendDM encrypts and sends a direct message to recipientLogin.
+func sendDM(recipientLogin, text string) {
+	if e2ePrivKey == nil {
+		fmt.Println("❌ E2E ключ не инициализирован")
+		return
+	}
+	pubkeyMu.RLock()
+	recipPub, ok := knownPubkeys[recipientLogin]
+	pubkeyMu.RUnlock()
+	if !ok {
+		fmt.Printf("⏳ Ключ %s не известен, запрашиваем...\n>> ", recipientLogin)
+		sendPublicKeyRequest(recipientLogin)
+		return
+	}
+
+	msgKey := make([]byte, 32)
+	nonce := make([]byte, 12)
+	rand.Read(msgKey)  //nolint:errcheck
+	rand.Read(nonce)   //nolint:errcheck
+
+	aead, err := chacha20poly1305.New(msgKey)
+	if err != nil {
+		fmt.Println("❌ Ошибка AEAD:", err)
+		return
+	}
+	encContent := aead.Seal(nil, nonce, []byte(text), nil)
+
+	// Envelopes: recipient + self
+	type envEntry struct {
+		login string
+		env   []byte
+	}
+	var envelopes []envEntry
+	if env, err := sealEnvelope(recipPub, msgKey); err == nil {
+		envelopes = append(envelopes, envEntry{recipientLogin, env})
+	}
+	pubkeyMu.RLock()
+	selfPub, hasSelf := knownPubkeys[myLogin]
+	pubkeyMu.RUnlock()
+	if !hasSelf && e2ePubKey != nil {
+		selfPub = e2ePubKey.Bytes()
+		hasSelf = true
+	}
+	if hasSelf && myLogin != "" {
+		if env, err := sealEnvelope(selfPub, msgKey); err == nil {
+			envelopes = append(envelopes, envEntry{myLogin, env})
+		}
+	}
+
+	// Assemble: [RecipLen(1)][Recip(N)][Nonce(12)][EncContentLen(2LE)][EncContent][EnvCount(1)][envs...]
+	rl := []byte(recipientLogin)
+	var assembled []byte
+	assembled = append(assembled, byte(len(rl)))
+	assembled = append(assembled, rl...)
+	assembled = append(assembled, nonce...)
+	ecLenBuf := make([]byte, 2)
+	binary.LittleEndian.PutUint16(ecLenBuf, uint16(len(encContent)))
+	assembled = append(assembled, ecLenBuf...)
+	assembled = append(assembled, encContent...)
+	assembled = append(assembled, byte(len(envelopes)))
+	for _, e := range envelopes {
+		lb := []byte(e.login)
+		assembled = append(assembled, byte(len(lb)))
+		assembled = append(assembled, lb...)
+		assembled = append(assembled, e.env...)
+	}
+	sendFragmented(CmdDM, assembled)
+	fmt.Printf("💬 [DM → %s]: %s\n>> ", recipientLogin, text)
+}
+
+// handleDMIncoming: [SenderLen(1)][Sender(N)][MsgID(4LE)][storedBlob][Envelope(80)]
+func handleDMIncoming(payload []byte) {
+	if len(payload) < 1+1+4+14+80 {
+		return
+	}
+	sLen := int(payload[0])
+	if len(payload) < 1+sLen+4+14+80 {
+		return
+	}
+	sender := string(payload[1 : 1+sLen])
+	storedBlob := payload[1+sLen+4 : len(payload)-80]
+	envelope := payload[len(payload)-80:]
+	if len(storedBlob) < 14 {
+		return
+	}
+	nonce := storedBlob[:12]
+	encContentLen := int(binary.LittleEndian.Uint16(storedBlob[12:14]))
+	if len(storedBlob) < 14+encContentLen {
+		return
+	}
+	plain, err := decryptE2E(envelope, nonce, storedBlob[14:14+encContentLen])
+	if err != nil {
+		return
+	}
+	now := time.Now().Local().Format("15:04")
+	fmt.Printf("\n💬 [DM от %s] [%s]: %s\n>> ", sender, now, string(plain))
+}
+
+// handleDMHistory: [SenderLen(1)][Sender(N)][RecipLen(1)][Recip(N)][Timestamp(4BE)][MsgID(4LE)][storedBlob][Envelope(80)]
+func handleDMHistory(payload []byte) {
+	if len(payload) < 1+1+1+4+4+14+80 {
+		return
+	}
+	sLen := int(payload[0])
+	if len(payload) < 1+sLen+1 {
+		return
+	}
+	sender := string(payload[1 : 1+sLen])
+	rLen := int(payload[1+sLen])
+	if len(payload) < 1+sLen+1+rLen+4+4+14+80 {
+		return
+	}
+	recip := string(payload[1+sLen+1 : 1+sLen+1+rLen])
+	tsOff := 1 + sLen + 1 + rLen
+	ts := uint32(payload[tsOff])<<24 | uint32(payload[tsOff+1])<<16 |
+		uint32(payload[tsOff+2])<<8 | uint32(payload[tsOff+3])
+	blobOff := tsOff + 4 + 4
+	storedBlob := payload[blobOff : len(payload)-80]
+	envelope := payload[len(payload)-80:]
+	if len(storedBlob) < 14 {
+		return
+	}
+	nonce := storedBlob[:12]
+	encContentLen := int(binary.LittleEndian.Uint16(storedBlob[12:14]))
+	if len(storedBlob) < 14+encContentLen {
+		return
+	}
+	plain, err := decryptE2E(envelope, nonce, storedBlob[14:14+encContentLen])
+	if err != nil {
+		return
+	}
+	timeStr := time.Unix(int64(ts), 0).Local().Format("2006-01-02 15:04")
+	fmt.Printf("  [DM %s→%s] [%s]: %s\n", sender, recip, timeStr, string(plain))
+}
+
+// ─── Rooms ────────────────────────────────────────────────────────────────────
+
+// sendCreateRoom: [NameLen(1)][Name(N)][IsPublic(1)][DescLen(2LE)][Desc(N)]
+func sendCreateRoom(name string, isPublic bool, desc string) {
+	nb := []byte(name)
+	db := []byte(desc)
+	pub := byte(0)
+	if isPublic {
+		pub = 1
+	}
+	descLenBuf := make([]byte, 2)
+	binary.LittleEndian.PutUint16(descLenBuf, uint16(len(db)))
+	var payload []byte
+	payload = append(payload, byte(len(nb)))
+	payload = append(payload, nb...)
+	payload = append(payload, pub)
+	payload = append(payload, descLenBuf...)
+	payload = append(payload, db...)
+	writeFrame(conn, CmdCreateRoom, payload)
+}
+
+// sendJoinRoom: [RoomID(4LE)]
+func sendJoinRoom(roomID uint32) {
+	buf := make([]byte, 4)
+	binary.LittleEndian.PutUint32(buf, roomID)
+	writeFrame(conn, CmdJoinRoom, buf)
+}
+
+// sendLeaveRoom: [RoomID(4LE)]
+func sendLeaveRoom(roomID uint32) {
+	buf := make([]byte, 4)
+	binary.LittleEndian.PutUint32(buf, roomID)
+	writeFrame(conn, CmdLeaveRoom, buf)
+}
+
+// sendRoomInvite: [RoomID(4LE)][UserLen(1)][User(N)]
+func sendRoomInvite(roomID uint32, username string) {
+	ub := []byte(username)
+	buf := make([]byte, 4)
+	binary.LittleEndian.PutUint32(buf, roomID)
+	var payload []byte
+	payload = append(payload, buf...)
+	payload = append(payload, byte(len(ub)))
+	payload = append(payload, ub...)
+	writeFrame(conn, CmdRoomInvite, payload)
+}
+
+// sendRoomMessage encrypts text for all known room members and sends via CmdRoomMsg.
+func sendRoomMessage(roomID uint32, text string) {
+	if e2ePrivKey == nil {
+		fmt.Println("❌ E2E ключ не инициализирован")
+		return
+	}
+
+	// Collect room members (not just online users) + self
+	roomsMu.RLock()
+	members := roomMembersMap[roomID]
+	roomsMu.RUnlock()
+	if len(members) == 0 {
+		fmt.Println("⚠️ Список участников комнаты ещё не получен, попробуйте по��же")
+		return
+	}
+	pubkeyMu.RLock()
+	recipients := make(map[string][]byte)
+	for _, name := range members {
+		if name == myLogin {
+			continue // self handled below
+		}
+		if pk, ok := knownPubkeys[name]; ok {
+			recipients[name] = pk
+		}
+	}
+	if myLogin != "" {
+		if pk, ok := knownPubkeys[myLogin]; ok {
+			recipients[myLogin] = pk
+		} else if e2ePubKey != nil {
+			recipients[myLogin] = e2ePubKey.Bytes()
+		}
+	}
+	pubkeyMu.RUnlock()
+
+	if len(recipients) == 0 {
+		fmt.Println("⚠️ Нет получателей с известными ключами")
+		return
+	}
+
+	msgKey := make([]byte, 32)
+	nonce := make([]byte, 12)
+	rand.Read(msgKey)  //nolint:errcheck
+	rand.Read(nonce)   //nolint:errcheck
+
+	aead, err := chacha20poly1305.New(msgKey)
+	if err != nil {
+		fmt.Println("❌ Ошибка AEAD:", err)
+		return
+	}
+	encContent := aead.Seal(nil, nonce, []byte(text), nil)
+
+	type envEntry struct {
+		login string
+		env   []byte
+	}
+	var envelopes []envEntry
+	for login, pubkey := range recipients {
+		if env, err := sealEnvelope(pubkey, msgKey); err == nil {
+			envelopes = append(envelopes, envEntry{login, env})
+		}
+	}
+
+	// [RoomID(4LE)][Nonce(12)][EncContentLen(2LE)][EncContent][EnvCount(1)][envs...]
+	idBuf := make([]byte, 4)
+	binary.LittleEndian.PutUint32(idBuf, roomID)
+	ecLenBuf := make([]byte, 2)
+	binary.LittleEndian.PutUint16(ecLenBuf, uint16(len(encContent)))
+	var assembled []byte
+	assembled = append(assembled, idBuf...)
+	assembled = append(assembled, nonce...)
+	assembled = append(assembled, ecLenBuf...)
+	assembled = append(assembled, encContent...)
+	assembled = append(assembled, byte(len(envelopes)))
+	for _, e := range envelopes {
+		lb := []byte(e.login)
+		assembled = append(assembled, byte(len(lb)))
+		assembled = append(assembled, lb...)
+		assembled = append(assembled, e.env...)
+	}
+	sendFragmented(CmdRoomMsg, assembled)
+	fmt.Printf("💬 [Room %d]: %s\n>> ", roomID, text)
+}
+
+// handleRoomList: [RoomCount(2LE)] per room: [RoomID(4LE)][NameLen(1)][Name(N)][IsPublic(1)][OwnerLen(1)][Owner(N)][MemberCount(2LE)]
+func handleRoomList(payload []byte) {
+	if len(payload) < 2 {
+		return
+	}
+	count := int(binary.LittleEndian.Uint16(payload[:2]))
+	off := 2
+	roomsMu.Lock()
+	for i := 0; i < count; i++ {
+		if off+4+1 > len(payload) {
+			break
+		}
+		id := binary.LittleEndian.Uint32(payload[off : off+4])
+		off += 4
+		nLen := int(payload[off])
+		off++
+		if off+nLen+1+1+2 > len(payload) {
+			break
+		}
+		name := string(payload[off : off+nLen])
+		off += nLen
+		isPublic := payload[off]
+		off++
+		oLen := int(payload[off])
+		off++
+		if off+oLen+2 > len(payload) {
+			break
+		}
+		owner := string(payload[off : off+oLen])
+		off += oLen
+		memberCount := int(binary.LittleEndian.Uint16(payload[off : off+2]))
+		off += 2
+		rooms[id] = name
+		_ = isPublic
+		fmt.Printf("\n🏠 Комната [%d] %s (владелец: %s, участников: %d)\n>> ", id, name, owner, memberCount)
+	}
+	roomsMu.Unlock()
+}
+
+// handleRoomCreated: [RoomID(4LE)][NameLen(1)][Name(N)][IsPublic(1)][OwnerLen(1)][Owner(N)]
+func handleRoomCreated(payload []byte) {
+	if len(payload) < 4+1+1+1 {
+		return
+	}
+	id := binary.LittleEndian.Uint32(payload[:4])
+	nLen := int(payload[4])
+	if len(payload) < 5+nLen+1+1 {
+		return
+	}
+	name := string(payload[5 : 5+nLen])
+	roomsMu.Lock()
+	rooms[id] = name
+	roomsMu.Unlock()
+	fmt.Printf("\n🏠 Комната создана/доступна: [%d] %s\n>> ", id, name)
+}
+
+// handleRoomMembers: [RoomID(4LE)][MemberCount(2LE)] per: [LoginLen(1)][Login(N)][IsAdmin(1)]
+func handleRoomMembers(payload []byte) {
+	if len(payload) < 6 {
+		return
+	}
+	id := binary.LittleEndian.Uint32(payload[:4])
+	count := int(binary.LittleEndian.Uint16(payload[4:6]))
+	off := 6
+	members := make([]string, 0, count)
+	for i := 0; i < count; i++ {
+		if off >= len(payload) {
+			break
+		}
+		lLen := int(payload[off])
+		off++
+		if off+lLen+1 > len(payload) {
+			break
+		}
+		members = append(members, string(payload[off:off+lLen]))
+		off += lLen + 1 // skip isAdmin
+	}
+	roomsMu.Lock()
+	roomMembersMap[id] = members
+	name := rooms[id]
+	roomsMu.Unlock()
+	// Request pubkeys for members we don't know yet
+	pubkeyMu.RLock()
+	for _, m := range members {
+		if _, have := knownPubkeys[m]; !have {
+			sendPublicKeyRequest(m)
+		}
+	}
+	pubkeyMu.RUnlock()
+	fmt.Printf("\n👥 Участники комнаты [%d] %s: %s\n>> ", id, name, strings.Join(members, ", "))
+}
+
+// handleRoomMemberAdd: [RoomID(4LE)][LoginLen(1)][Login(N)]
+func handleRoomMemberAdd(payload []byte) {
+	if len(payload) < 6 {
+		return
+	}
+	id := binary.LittleEndian.Uint32(payload[:4])
+	lLen := int(payload[4])
+	if len(payload) < 5+lLen {
+		return
+	}
+	login := string(payload[5 : 5+lLen])
+	roomsMu.Lock()
+	existing := roomMembersMap[id]
+	found := false
+	for _, m := range existing {
+		if m == login {
+			found = true
+			break
+		}
+	}
+	if !found {
+		roomMembersMap[id] = append(existing, login)
+	}
+	name := rooms[id]
+	roomsMu.Unlock()
+	pubkeyMu.RLock()
+	_, have := knownPubkeys[login]
+	pubkeyMu.RUnlock()
+	if !have {
+		sendPublicKeyRequest(login)
+	}
+	fmt.Printf("\n➕ %s вошёл в комнату [%d] %s\n>> ", login, id, name)
+}
+
+// handleRoomMemberRem: [RoomID(4LE)][LoginLen(1)][Login(N)]
+func handleRoomMemberRem(payload []byte) {
+	if len(payload) < 6 {
+		return
+	}
+	id := binary.LittleEndian.Uint32(payload[:4])
+	lLen := int(payload[4])
+	if len(payload) < 5+lLen {
+		return
+	}
+	login := string(payload[5 : 5+lLen])
+	roomsMu.Lock()
+	existing := roomMembersMap[id]
+	filtered := existing[:0]
+	for _, m := range existing {
+		if m != login {
+			filtered = append(filtered, m)
+		}
+	}
+	if login == myLogin {
+		delete(roomMembersMap, id)
+		delete(rooms, id)
+	} else {
+		roomMembersMap[id] = filtered
+	}
+	name := rooms[id]
+	roomsMu.Unlock()
+	fmt.Printf("\n➖ %s покинул комнату [%d] %s\n>> ", login, id, name)
+}
+
+// handleRoomMsgIncoming: [RoomID(4LE)][SenderLen(1)][Sender(N)][MsgID(4LE)][storedBlob][Envelope(80)]
+func handleRoomMsgIncoming(payload []byte) {
+	if len(payload) < 4+1+1+4+14+80 {
+		return
+	}
+	id := binary.LittleEndian.Uint32(payload[:4])
+	sLen := int(payload[4])
+	if len(payload) < 5+sLen+4+14+80 {
+		return
+	}
+	sender := string(payload[5 : 5+sLen])
+	storedBlob := payload[5+sLen+4 : len(payload)-80]
+	envelope := payload[len(payload)-80:]
+	if len(storedBlob) < 14 {
+		return
+	}
+	nonce := storedBlob[:12]
+	encContentLen := int(binary.LittleEndian.Uint16(storedBlob[12:14]))
+	if len(storedBlob) < 14+encContentLen {
+		return
+	}
+	plain, err := decryptE2E(envelope, nonce, storedBlob[14:14+encContentLen])
+	if err != nil {
+		return
+	}
+	roomsMu.RLock()
+	name := rooms[id]
+	roomsMu.RUnlock()
+	now := time.Now().Local().Format("15:04")
+	fmt.Printf("\n💬 [Room %d/%s] [%s] %s: %s\n>> ", id, name, now, sender, string(plain))
+}
+
+// handleRoomHistory: [RoomID(4LE)][SenderLen(1)][Sender(N)][Timestamp(4BE)][MsgID(4LE)][storedBlob][Envelope(80)]
+func handleRoomHistory(payload []byte) {
+	if len(payload) < 4+1+1+4+4+14+80 {
+		return
+	}
+	id := binary.LittleEndian.Uint32(payload[:4])
+	sLen := int(payload[4])
+	if len(payload) < 5+sLen+4+4+14+80 {
+		return
+	}
+	sender := string(payload[5 : 5+sLen])
+	tsOff := 5 + sLen
+	ts := uint32(payload[tsOff])<<24 | uint32(payload[tsOff+1])<<16 |
+		uint32(payload[tsOff+2])<<8 | uint32(payload[tsOff+3])
+	blobOff := tsOff + 4 + 4
+	storedBlob := payload[blobOff : len(payload)-80]
+	envelope := payload[len(payload)-80:]
+	if len(storedBlob) < 14 {
+		return
+	}
+	nonce := storedBlob[:12]
+	encContentLen := int(binary.LittleEndian.Uint16(storedBlob[12:14]))
+	if len(storedBlob) < 14+encContentLen {
+		return
+	}
+	plain, err := decryptE2E(envelope, nonce, storedBlob[14:14+encContentLen])
+	if err != nil {
+		return
+	}
+	roomsMu.RLock()
+	name := rooms[id]
+	roomsMu.RUnlock()
+	timeStr := time.Unix(int64(ts), 0).Local().Format("2006-01-02 15:04")
+	fmt.Printf("  [Room %d/%s] [%s] %s: %s\n", id, name, timeStr, sender, string(plain))
 }

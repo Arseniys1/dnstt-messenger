@@ -44,6 +44,23 @@ const CMD = {
   E2E_MSG:            0x12,
   E2E_INCOMING:       0x13,
   E2E_HISTORY:        0x14,
+  // Direct messages
+  DM:          0x15,
+  DM_INCOMING: 0x16,
+  DM_HISTORY:  0x17,
+  // Rooms
+  CREATE_ROOM:       0x18,
+  ROOM_CREATED:      0x19,
+  ROOM_LIST:         0x1A,
+  JOIN_ROOM:         0x1B,
+  LEAVE_ROOM:        0x1C,
+  ROOM_MSG:          0x1D,
+  ROOM_MSG_INCOMING: 0x1E,
+  ROOM_HISTORY:      0x1F,
+  ROOM_INVITE:       0x20,
+  ROOM_MEMBERS:      0x21,
+  ROOM_MEMBER_ADD:   0x22,
+  ROOM_MEMBER_REM:   0x23,
 };
 
 const MAX_FRAME_SIZE = 180;
@@ -90,6 +107,13 @@ class MessengerClient extends EventEmitter {
     // True after HISTORY_END — guarantees ONLINE_LIST has been processed
     // so all recipients are known before the first send.
     this._readyToSend = false;
+
+    // DM state
+    this._pendingDMs = new Map();  // recipientLogin → text[] (queued DMs waiting for pubkey)
+
+    // Room state
+    this._rooms = new Map();       // roomID → { name, isPublic, owner, members: Set<login> }
+    this._pendingRoomMsgs = new Map(); // roomID → text[] (queued until all pubkeys known)
   }
 
   // ---- Key file path ----
@@ -427,6 +451,195 @@ class MessengerClient extends EventEmitter {
     }
   }
 
+  // ---- Send Direct Message ----
+  sendDM(recipientLogin, text) {
+    if (!this._e2ePrivKey) return false;
+    if (!this._readyToSend) {
+      const q = this._pendingDMs.get(recipientLogin) || [];
+      q.push(text);
+      this._pendingDMs.set(recipientLogin, q);
+      return true;
+    }
+    const recipPub = this._knownPubkeys.get(recipientLogin);
+    if (!recipPub) {
+      const q = this._pendingDMs.get(recipientLogin) || [];
+      q.push(text);
+      this._pendingDMs.set(recipientLogin, q);
+      this._sendPublicKeyRequest(recipientLogin);
+      return true;
+    }
+    this._doSendDM(recipientLogin, recipPub, text);
+    return true;
+  }
+
+  _doSendDM(recipientLogin, recipPub, text) {
+    const msgKey = crypto.randomBytes(32);
+    const nonce  = crypto.randomBytes(12);
+    const msgU   = new TextEncoder().encode(text);
+    const cipher = chacha20poly1305(new Uint8Array(msgKey), new Uint8Array(nonce));
+    const encContent = Buffer.from(cipher.encrypt(msgU));
+
+    const envelopes = [];
+    // Envelope for recipient
+    try {
+      envelopes.push({ login: recipientLogin, env: this._sealEnvelope(recipPub, msgKey) });
+    } catch (e) {
+      console.warn('[DM] envelope error for recipient', e);
+      return;
+    }
+    // Envelope for self (history) — always add own pubkey so sender can decrypt history
+    if (this._myLogin && this._e2ePubKey) {
+      if (!this._knownPubkeys.has(this._myLogin)) {
+        this._knownPubkeys.set(this._myLogin, Buffer.from(this._e2ePubKey));
+      }
+      try {
+        envelopes.push({ login: this._myLogin, env: this._sealEnvelope(this._knownPubkeys.get(this._myLogin), msgKey) });
+      } catch (e) { /* skip self envelope on error */ }
+    }
+
+    const ecLenBuf = Buffer.alloc(2);
+    ecLenBuf.writeUInt16LE(encContent.length, 0);
+    const rlBuf = Buffer.from(recipientLogin);
+    const envParts = envelopes.map(({ login, env }) => {
+      const lb = Buffer.from(login);
+      return Buffer.concat([Buffer.from([lb.length]), lb, env]);
+    });
+    const assembled = Buffer.concat([
+      Buffer.from([rlBuf.length]), rlBuf,
+      nonce, ecLenBuf, encContent,
+      Buffer.from([envelopes.length]),
+      ...envParts,
+    ]);
+    this._sendFragmented(CMD.DM, assembled);
+  }
+
+  _flushPendingDMs() {
+    for (const [login, msgs] of this._pendingDMs) {
+      const pub = this._knownPubkeys.get(login);
+      if (!pub) continue;
+      for (const text of msgs) {
+        this._doSendDM(login, pub, text);
+      }
+      this._pendingDMs.delete(login);
+    }
+  }
+
+  // ---- Room operations ----
+  createRoom(name, isPublic, description) {
+    const nb = Buffer.from(name);
+    const db2 = Buffer.from(description || '');
+    const descLenBuf = Buffer.alloc(2);
+    descLenBuf.writeUInt16LE(db2.length, 0);
+    const payload = Buffer.concat([
+      Buffer.from([nb.length]), nb,
+      Buffer.from([isPublic ? 1 : 0]),
+      descLenBuf, db2,
+    ]);
+    this.socket.write(this._buildFrame(CMD.CREATE_ROOM, payload));
+  }
+
+  joinRoom(roomID) {
+    const buf = Buffer.alloc(4);
+    buf.writeUInt32LE(roomID, 0);
+    this.socket.write(this._buildFrame(CMD.JOIN_ROOM, buf));
+  }
+
+  leaveRoom(roomID) {
+    const buf = Buffer.alloc(4);
+    buf.writeUInt32LE(roomID, 0);
+    this.socket.write(this._buildFrame(CMD.LEAVE_ROOM, buf));
+  }
+
+  inviteToRoom(roomID, username) {
+    const ub = Buffer.from(username);
+    const buf = Buffer.alloc(4);
+    buf.writeUInt32LE(roomID, 0);
+    const payload = Buffer.concat([buf, Buffer.from([ub.length]), ub]);
+    this.socket.write(this._buildFrame(CMD.ROOM_INVITE, payload));
+  }
+
+  sendRoomMessage(roomID, text) {
+    if (!this._e2ePrivKey) return false;
+    const room = this._rooms.get(roomID);
+    if (!room) return false;
+
+    if (!this._readyToSend) {
+      const q = this._pendingRoomMsgs.get(roomID) || [];
+      q.push(text);
+      this._pendingRoomMsgs.set(roomID, q);
+      return true;
+    }
+
+    const members = [...room.members];
+    // Queue if we haven't received the member list yet
+    if (members.length === 0) {
+      const q = this._pendingRoomMsgs.get(roomID) || [];
+      q.push(text);
+      this._pendingRoomMsgs.set(roomID, q);
+      return true;
+    }
+    const missing = members.filter(m => m !== this._myLogin && !this._knownPubkeys.has(m));
+    if (missing.length > 0) {
+      const q = this._pendingRoomMsgs.get(roomID) || [];
+      q.push(text);
+      this._pendingRoomMsgs.set(roomID, q);
+      missing.forEach(m => this._sendPublicKeyRequest(m));
+      return true;
+    }
+    this._doSendRoomMessage(roomID, text, members);
+    return true;
+  }
+
+  _doSendRoomMessage(roomID, text, members) {
+    const msgKey = crypto.randomBytes(32);
+    const nonce  = crypto.randomBytes(12);
+    const msgU   = new TextEncoder().encode(text);
+    const cipher = chacha20poly1305(new Uint8Array(msgKey), new Uint8Array(nonce));
+    const encContent = Buffer.from(cipher.encrypt(msgU));
+
+    const envelopes = [];
+    for (const login of members) {
+      let pub = this._knownPubkeys.get(login);
+      if (!pub && login === this._myLogin) pub = Buffer.from(this._e2ePubKey);
+      if (!pub) continue;
+      try {
+        envelopes.push({ login, env: this._sealEnvelope(pub, msgKey) });
+      } catch (e) {
+        console.warn('[Room] envelope error for', login, e);
+      }
+    }
+
+    const idBuf = Buffer.alloc(4);
+    idBuf.writeUInt32LE(roomID, 0);
+    const ecLenBuf = Buffer.alloc(2);
+    ecLenBuf.writeUInt16LE(encContent.length, 0);
+    const envParts = envelopes.map(({ login, env }) => {
+      const lb = Buffer.from(login);
+      return Buffer.concat([Buffer.from([lb.length]), lb, env]);
+    });
+    const assembled = Buffer.concat([
+      idBuf, nonce, ecLenBuf, encContent,
+      Buffer.from([envelopes.length]),
+      ...envParts,
+    ]);
+    this._sendFragmented(CMD.ROOM_MSG, assembled);
+  }
+
+  _flushPendingRoomMsgs() {
+    for (const [roomID, msgs] of this._pendingRoomMsgs) {
+      const room = this._rooms.get(roomID);
+      if (!room) { this._pendingRoomMsgs.delete(roomID); continue; }
+      const members = [...room.members];
+      if (members.length === 0) continue; // ROOM_MEMBERS not yet received
+      const missing = members.filter(m => m !== this._myLogin && !this._knownPubkeys.has(m));
+      if (missing.length > 0) continue;
+      for (const text of msgs) {
+        this._doSendRoomMessage(roomID, text, members);
+      }
+      this._pendingRoomMsgs.delete(roomID);
+    }
+  }
+
   // ---- Incoming data ----
   _onData(chunk) {
     this._buf = Buffer.concat([this._buf, chunk]);
@@ -482,6 +695,8 @@ class MessengerClient extends EventEmitter {
         this._readyToSend = true;
         this.emit('history-end');
         this._flushPending();
+        this._flushPendingDMs();
+        this._flushPendingRoomMsgs();
         break;
 
       case CMD.E2E_HISTORY: {
@@ -515,10 +730,12 @@ class MessengerClient extends EventEmitter {
       }
 
       case CMD.E2E_INCOMING: {
-        // [SenderSID(2 BE)][MsgID(4 LE)][storedBlob(12+N)][Envelope(80)]
-        if (payload.length < 100) break;
-        const senderSID  = (payload[0] << 8) | payload[1];
-        const storedBlob = payload.slice(6, payload.length - 80);
+        // [SenderLen(1)][Sender(N)][MsgID(4 LE)][storedBlob(12+N)][Envelope(80)]
+        if (payload.length < 1 + 1 + 4 + 14 + 80) break;
+        const sLen       = payload[0];
+        if (payload.length < 1 + sLen + 4 + 14 + 80) break;
+        const senderName = payload.slice(1, 1 + sLen).toString();
+        const storedBlob = payload.slice(1 + sLen + 4, payload.length - 80);
         const envelope   = payload.slice(payload.length - 80);
         if (storedBlob.length < 14) break;
         const nonce         = storedBlob.slice(0, 12);
@@ -526,11 +743,10 @@ class MessengerClient extends EventEmitter {
         if (storedBlob.length < 14 + encContentLen) break;
         const ciphertext = storedBlob.slice(14, 14 + encContentLen);
         try {
-          const msgKey     = this._openEnvelope(envelope);
-          const cipher     = chacha20poly1305(new Uint8Array(msgKey), new Uint8Array(nonce));
-          const plain      = Buffer.from(cipher.decrypt(new Uint8Array(ciphertext))).toString();
-          const senderName = this._sidNames.get(senderSID) || `SID:${senderSID}`;
-          const now        = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+          const msgKey = this._openEnvelope(envelope);
+          const cipher = chacha20poly1305(new Uint8Array(msgKey), new Uint8Array(nonce));
+          const plain  = Buffer.from(cipher.decrypt(new Uint8Array(ciphertext))).toString();
+          const now    = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
           this.emit('message', senderName, plain, now);
         } catch (_) {}
         break;
@@ -545,6 +761,8 @@ class MessengerClient extends EventEmitter {
         const pubkey   = payload.slice(1 + uLen, 1 + uLen + 32);
         this._knownPubkeys.set(username, pubkey);
         this._flushPending();
+        this._flushPendingDMs();
+        this._flushPendingRoomMsgs();
         break;
       }
 
@@ -607,6 +825,223 @@ class MessengerClient extends EventEmitter {
         }
         this._knownServers = servers;
         this.emit('server-list', servers);
+        break;
+      }
+
+      // ---- Direct message incoming ----
+      // [SenderLen(1)][Sender(N)][MsgID(4LE)][storedBlob][Envelope(80)]
+      case CMD.DM_INCOMING: {
+        if (payload.length < 1 + 1 + 4 + 14 + 80) break;
+        const sLen = payload[0];
+        if (payload.length < 1 + sLen + 4 + 14 + 80) break;
+        const sender     = payload.slice(1, 1 + sLen).toString();
+        const storedBlob = payload.slice(1 + sLen + 4, payload.length - 80);
+        const envelope   = payload.slice(payload.length - 80);
+        if (storedBlob.length < 14) break;
+        try {
+          const msgKey    = this._openEnvelope(envelope);
+          const nonce     = storedBlob.slice(0, 12);
+          const ecLen     = storedBlob.readUInt16LE(12);
+          const cipher    = chacha20poly1305(new Uint8Array(msgKey), new Uint8Array(nonce));
+          const plain     = Buffer.from(cipher.decrypt(new Uint8Array(storedBlob.slice(14, 14 + ecLen)))).toString();
+          const now       = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+          this.emit('dm', { sender, text: plain, time: now });
+        } catch (_) {}
+        break;
+      }
+
+      // ---- DM history ----
+      // [SenderLen(1)][Sender(N)][RecipientLen(1)][Recipient(N)][Timestamp(4BE)][MsgID(4LE)][storedBlob][Envelope(80)]
+      case CMD.DM_HISTORY: {
+        if (payload.length < 1 + 1 + 1 + 4 + 4 + 14 + 80) break;
+        const sLen = payload[0];
+        if (payload.length < 1 + sLen + 1) break;
+        const sender = payload.slice(1, 1 + sLen).toString();
+        const rLen   = payload[1 + sLen];
+        if (payload.length < 1 + sLen + 1 + rLen + 4 + 4 + 14 + 80) break;
+        const recipient  = payload.slice(1 + sLen + 1, 1 + sLen + 1 + rLen).toString();
+        const tsOff      = 1 + sLen + 1 + rLen;
+        const ts         = payload.readUInt32BE(tsOff);
+        const blobOff    = tsOff + 4 + 4;
+        const storedBlob = payload.slice(blobOff, payload.length - 80);
+        const envelope   = payload.slice(payload.length - 80);
+        if (storedBlob.length < 14) break;
+        try {
+          const msgKey = this._openEnvelope(envelope);
+          const nonce  = storedBlob.slice(0, 12);
+          const ecLen  = storedBlob.readUInt16LE(12);
+          const cipher = chacha20poly1305(new Uint8Array(msgKey), new Uint8Array(nonce));
+          const plain  = Buffer.from(cipher.decrypt(new Uint8Array(storedBlob.slice(14, 14 + ecLen)))).toString();
+          const time   = new Date(ts * 1000).toLocaleString([], {
+            year: 'numeric', month: '2-digit', day: '2-digit',
+            hour: '2-digit', minute: '2-digit',
+          });
+          this.emit('dm-history', { sender, recipient, text: plain, time });
+        } catch (_) {}
+        break;
+      }
+
+      // ---- Room list ----
+      // [RoomCount(2LE)] per room: [RoomID(4LE)][NameLen(1)][Name(N)][IsPublic(1)][OwnerLen(1)][Owner(N)][MemberCount(2LE)]
+      case CMD.ROOM_LIST: {
+        if (payload.length < 2) break;
+        const count = payload.readUInt16LE(0);
+        let off = 2;
+        const rooms = [];
+        for (let i = 0; i < count; i++) {
+          if (off + 4 + 1 > payload.length) break;
+          const id   = payload.readUInt32LE(off); off += 4;
+          const nLen = payload[off++];
+          if (off + nLen + 1 + 1 + 2 > payload.length) break;
+          const name     = payload.slice(off, off + nLen).toString(); off += nLen;
+          const isPublic = payload[off++];
+          const oLen     = payload[off++];
+          if (off + oLen + 2 > payload.length) break;
+          const owner     = payload.slice(off, off + oLen).toString(); off += oLen;
+          const memberCount = payload.readUInt16LE(off); off += 2;
+          if (!this._rooms.has(id)) {
+            this._rooms.set(id, { name, isPublic: !!isPublic, owner, members: new Set() });
+          }
+          rooms.push({ id, name, isPublic: !!isPublic, owner, memberCount });
+        }
+        this.emit('room-list', rooms);
+        break;
+      }
+
+      // ---- Room created / invited ----
+      // [RoomID(4LE)][NameLen(1)][Name(N)][IsPublic(1)][OwnerLen(1)][Owner(N)]  [opt: InviterLen(1)][Inviter(N)]
+      case CMD.ROOM_CREATED: {
+        if (payload.length < 4 + 1 + 1 + 1) break;
+        const id   = payload.readUInt32LE(0);
+        const nLen = payload[4];
+        if (payload.length < 5 + nLen + 1 + 1) break;
+        const name     = payload.slice(5, 5 + nLen).toString();
+        const isPublic = payload[5 + nLen];
+        const oLen     = payload[6 + nLen];
+        if (payload.length < 7 + nLen + oLen) break;
+        const owner = payload.slice(7 + nLen, 7 + nLen + oLen).toString();
+        let inviter = null;
+        const invOff = 7 + nLen + oLen;
+        if (payload.length > invOff + 1) {
+          const iLen = payload[invOff];
+          if (payload.length >= invOff + 1 + iLen) {
+            inviter = payload.slice(invOff + 1, invOff + 1 + iLen).toString();
+          }
+        }
+        if (!this._rooms.has(id)) {
+          this._rooms.set(id, { name, isPublic: !!isPublic, owner, members: new Set() });
+        }
+        this.emit('room-created', { id, name, isPublic: !!isPublic, owner, inviter });
+        break;
+      }
+
+      // ---- Room members ----
+      // [RoomID(4LE)][MemberCount(2LE)] per: [LoginLen(1)][Login(N)][IsAdmin(1)]
+      case CMD.ROOM_MEMBERS: {
+        if (payload.length < 6) break;
+        const id    = payload.readUInt32LE(0);
+        const count = payload.readUInt16LE(4);
+        let off = 6;
+        const members = [];
+        for (let i = 0; i < count; i++) {
+          if (off >= payload.length) break;
+          const lLen    = payload[off++];
+          if (off + lLen + 1 > payload.length) break;
+          const login   = payload.slice(off, off + lLen).toString(); off += lLen;
+          const isAdmin = payload[off++];
+          members.push({ login, isAdmin: !!isAdmin });
+        }
+        const room = this._rooms.get(id);
+        if (room) {
+          room.members = new Set(members.map(m => m.login));
+          // Request pubkeys for all room members we don't know yet
+          members.forEach(({ login }) => {
+            if (!this._knownPubkeys.has(login)) this._sendPublicKeyRequest(login);
+          });
+        }
+        this.emit('room-members', { id, members });
+        this._flushPendingRoomMsgs();
+        break;
+      }
+
+      // ---- Room member joined ----
+      // [RoomID(4LE)][LoginLen(1)][Login(N)]
+      case CMD.ROOM_MEMBER_ADD: {
+        if (payload.length < 6) break;
+        const id   = payload.readUInt32LE(0);
+        const lLen = payload[4];
+        if (payload.length < 5 + lLen) break;
+        const login = payload.slice(5, 5 + lLen).toString();
+        const room  = this._rooms.get(id);
+        if (room) room.members.add(login);
+        if (!this._knownPubkeys.has(login)) this._sendPublicKeyRequest(login);
+        this.emit('room-member-add', { id, login });
+        break;
+      }
+
+      // ---- Room member left ----
+      // [RoomID(4LE)][LoginLen(1)][Login(N)]
+      case CMD.ROOM_MEMBER_REM: {
+        if (payload.length < 6) break;
+        const id   = payload.readUInt32LE(0);
+        const lLen = payload[4];
+        if (payload.length < 5 + lLen) break;
+        const login = payload.slice(5, 5 + lLen).toString();
+        const room  = this._rooms.get(id);
+        if (room) room.members.delete(login);
+        this.emit('room-member-rem', { id, login });
+        break;
+      }
+
+      // ---- Room message incoming ----
+      // [RoomID(4LE)][SenderLen(1)][Sender(N)][MsgID(4LE)][storedBlob][Envelope(80)]
+      case CMD.ROOM_MSG_INCOMING: {
+        if (payload.length < 4 + 1 + 1 + 4 + 14 + 80) break;
+        const id   = payload.readUInt32LE(0);
+        const sLen = payload[4];
+        if (payload.length < 5 + sLen + 4 + 14 + 80) break;
+        const sender     = payload.slice(5, 5 + sLen).toString();
+        const storedBlob = payload.slice(5 + sLen + 4, payload.length - 80);
+        const envelope   = payload.slice(payload.length - 80);
+        if (storedBlob.length < 14) break;
+        try {
+          const msgKey = this._openEnvelope(envelope);
+          const nonce  = storedBlob.slice(0, 12);
+          const ecLen  = storedBlob.readUInt16LE(12);
+          const cipher = chacha20poly1305(new Uint8Array(msgKey), new Uint8Array(nonce));
+          const plain  = Buffer.from(cipher.decrypt(new Uint8Array(storedBlob.slice(14, 14 + ecLen)))).toString();
+          const now    = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+          this.emit('room-message', { roomID: id, sender, text: plain, time: now });
+        } catch (_) {}
+        break;
+      }
+
+      // ---- Room history ----
+      // [RoomID(4LE)][SenderLen(1)][Sender(N)][Timestamp(4BE)][MsgID(4LE)][storedBlob][Envelope(80)]
+      case CMD.ROOM_HISTORY: {
+        if (payload.length < 4 + 1 + 1 + 4 + 4 + 14 + 80) break;
+        const id   = payload.readUInt32LE(0);
+        const sLen = payload[4];
+        if (payload.length < 5 + sLen + 4 + 4 + 14 + 80) break;
+        const sender     = payload.slice(5, 5 + sLen).toString();
+        const tsOff      = 5 + sLen;
+        const ts         = payload.readUInt32BE(tsOff);
+        const blobOff    = tsOff + 4 + 4;
+        const storedBlob = payload.slice(blobOff, payload.length - 80);
+        const envelope   = payload.slice(payload.length - 80);
+        if (storedBlob.length < 14) break;
+        try {
+          const msgKey = this._openEnvelope(envelope);
+          const nonce  = storedBlob.slice(0, 12);
+          const ecLen  = storedBlob.readUInt16LE(12);
+          const cipher = chacha20poly1305(new Uint8Array(msgKey), new Uint8Array(nonce));
+          const plain  = Buffer.from(cipher.decrypt(new Uint8Array(storedBlob.slice(14, 14 + ecLen)))).toString();
+          const time   = new Date(ts * 1000).toLocaleString([], {
+            year: 'numeric', month: '2-digit', day: '2-digit',
+            hour: '2-digit', minute: '2-digit',
+          });
+          this.emit('room-history', { roomID: id, sender, text: plain, time });
+        } catch (_) {}
         break;
       }
 
