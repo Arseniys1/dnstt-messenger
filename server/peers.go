@@ -508,7 +508,9 @@ func handleSyncRequest(conn net.Conn, msg s2sMsg) {
 		for envRows.Next() {
 			var login string
 			var env []byte
-			envRows.Scan(&login, &env) //nolint:errcheck
+			if err := envRows.Scan(&login, &env); err != nil {
+				continue
+			}
 			envelopes[login] = env
 		}
 		envRows.Close()

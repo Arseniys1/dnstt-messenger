@@ -179,9 +179,13 @@ func handleConnection(conn net.Conn) {
 	defer func() {
 		if mySID != 0 {
 			sessMu.Lock()
-			login := clients[mySID].login
+			cs := clients[mySID]
 			delete(clients, mySID)
 			sessMu.Unlock()
+			login := ""
+			if cs != nil {
+				login = cs.login
+			}
 			fmt.Printf("👋 Отключился: %s (SID: %d)\n", login, mySID)
 			broadcastOnlineRemove(mySID)
 
@@ -228,7 +232,9 @@ func handleConnection(conn net.Conn) {
 			case CmdRegister:
 				handleRegister(conn, payload)
 			case CmdLogin:
-				mySID = handleLogin(conn, payload, sharedKey)
+				if mySID == 0 {
+					mySID = handleLogin(conn, payload, sharedKey)
+				}
 			case CmdSetPublicKey:
 				if mySID != 0 {
 					handleSetPublicKey(mySID, payload)
@@ -1318,7 +1324,9 @@ func handleJoinRoom(senderSID uint16, payload []byte) {
 	}
 
 	var exists int
-	db.QueryRow("SELECT COUNT(*) FROM room_members WHERE room_id = ? AND login = ?", roomID, login).Scan(&exists) //nolint:errcheck
+	if err := db.QueryRow("SELECT COUNT(*) FROM room_members WHERE room_id = ? AND login = ?", roomID, login).Scan(&exists); err != nil {
+		return
+	}
 	if exists > 0 {
 		sendRoomMembersTo(conn, roomID)
 		sendRoomHistory(conn, roomID, login)
@@ -1335,7 +1343,9 @@ func handleJoinRoom(senderSID uint16, payload []byte) {
 	binary.LittleEndian.PutUint32(idBuf, roomID)
 	nb := []byte(roomName)
 	var owner string
-	db.QueryRow("SELECT owner FROM rooms WHERE id = ?", roomID).Scan(&owner) //nolint:errcheck
+	if err := db.QueryRow("SELECT owner FROM rooms WHERE id = ?", roomID).Scan(&owner); err != nil {
+		return
+	}
 	ob := []byte(owner)
 	resp := make([]byte, 0, 4+1+len(nb)+1+1+len(ob))
 	resp = append(resp, idBuf...)
@@ -1424,7 +1434,9 @@ func handleRoomMsg(senderSID uint16, data []byte) {
 	}
 
 	var isMember int
-	db.QueryRow("SELECT COUNT(*) FROM room_members WHERE room_id = ? AND login = ?", roomID, senderLogin).Scan(&isMember) //nolint:errcheck
+	if err := db.QueryRow("SELECT COUNT(*) FROM room_members WHERE room_id = ? AND login = ?", roomID, senderLogin).Scan(&isMember); err != nil {
+		return
+	}
 	if isMember == 0 {
 		return
 	}
@@ -1518,7 +1530,9 @@ func handleRoomInvite(senderSID uint16, payload []byte) {
 	}
 
 	var isMember int
-	db.QueryRow("SELECT COUNT(*) FROM room_members WHERE room_id = ? AND login = ?", roomID, inviter).Scan(&isMember) //nolint:errcheck
+	if err := db.QueryRow("SELECT COUNT(*) FROM room_members WHERE room_id = ? AND login = ?", roomID, inviter).Scan(&isMember); err != nil {
+		return
+	}
 	if isMember == 0 {
 		return
 	}
@@ -1593,12 +1607,16 @@ func broadcastRoomMemberAdd(roomID uint32, login string, exceptSID uint16) {
 	rows.Close()
 
 	sessMu.RLock()
+	conns := make([]net.Conn, 0)
 	for sid, cs := range clients {
 		if sid != exceptSID && memberSet[cs.login] {
-			writeFrame(cs.conn, CmdRoomMemberAdd, payload)
+			conns = append(conns, cs.conn)
 		}
 	}
 	sessMu.RUnlock()
+	for _, c := range conns {
+		writeFrame(c, CmdRoomMemberAdd, payload)
+	}
 }
 
 // broadcastRoomMemberRem sends CmdRoomMemberRem to all online room members (including the leaver).
@@ -1626,14 +1644,18 @@ func broadcastRoomMemberRem(roomID uint32, login string, leaverSID uint16) {
 	rows.Close()
 
 	sessMu.RLock()
+	conns := make([]net.Conn, 0)
 	for _, cs := range clients {
 		if memberSet[cs.login] {
-			writeFrame(cs.conn, CmdRoomMemberRem, payload)
+			conns = append(conns, cs.conn)
 		}
 	}
 	// Also notify the leaver themselves
 	if cs, ok := clients[leaverSID]; ok {
-		writeFrame(cs.conn, CmdRoomMemberRem, payload)
+		conns = append(conns, cs.conn)
 	}
 	sessMu.RUnlock()
+	for _, c := range conns {
+		writeFrame(c, CmdRoomMemberRem, payload)
+	}
 }

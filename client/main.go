@@ -34,9 +34,11 @@ var (
 	myLogin      string // set after successful login
 	conn         net.Conn
 	sharedKey    []byte
-	fragCounter  atomic.Uint64
-	sidNames     = make(map[uint16]string) // SID → username
-	knownServers []string
+	fragCounter    atomic.Uint64
+	sidNamesMu     sync.RWMutex
+	sidNames       = make(map[uint16]string) // SID → username
+	knownServersMu sync.RWMutex
+	knownServers   []string
 
 	// E2E keys
 	e2ePrivKey *ecdh.PrivateKey
@@ -214,11 +216,14 @@ func main() {
 			break
 		}
 		if text == "/servers" {
-			if len(knownServers) == 0 {
+			knownServersMu.RLock()
+			servers := knownServers
+			knownServersMu.RUnlock()
+			if len(servers) == 0 {
 				fmt.Println("📡 Список серверов пуст.")
 			} else {
-				fmt.Printf("📡 Известные серверы (%d):\n", len(knownServers))
-				for i, s := range knownServers {
+				fmt.Printf("📡 Известные серверы (%d):\n", len(servers))
+				for i, s := range servers {
 					fmt.Printf("  %d. %s\n", i+1, s)
 				}
 			}
@@ -431,6 +436,14 @@ func sendE2EMessage(text string) {
 		return
 	}
 
+	// Snapshot sidNames before acquiring pubkeyMu to avoid lock ordering issues
+	sidNamesMu.RLock()
+	localSidNames := make([]string, 0, len(sidNames))
+	for _, name := range sidNames {
+		localSidNames = append(localSidNames, name)
+	}
+	sidNamesMu.RUnlock()
+
 	// Collect recipients: all users whose pubkeys are known (local + federated) + self
 	pubkeyMu.RLock()
 	recipients := make(map[string][]byte, len(knownPubkeys)+1)
@@ -441,7 +454,7 @@ func sendE2EMessage(text string) {
 	}
 	// Check for missing pubkeys among locally-online users (same server)
 	var missing []string
-	for _, name := range sidNames {
+	for _, name := range localSidNames {
 		if name == myLogin {
 			continue
 		}
@@ -580,6 +593,13 @@ func flushPendingMessages() {
 	pendingMu.Unlock()
 
 	for _, text := range msgs {
+		sidNamesMu.RLock()
+		localSidNames := make([]string, 0, len(sidNames))
+		for _, name := range sidNames {
+			localSidNames = append(localSidNames, name)
+		}
+		sidNamesMu.RUnlock()
+
 		pubkeyMu.RLock()
 		recipients := make(map[string][]byte, len(knownPubkeys)+1)
 		for name, pk := range knownPubkeys {
@@ -588,7 +608,7 @@ func flushPendingMessages() {
 			recipients[name] = pkCopy
 		}
 		var missing []string
-		for _, name := range sidNames {
+		for _, name := range localSidNames {
 			if name == myLogin {
 				continue
 			}
@@ -706,7 +726,9 @@ func readLoop(loginDone chan bool, historyDone chan struct{}) {
 					names = append(names, name)
 				}
 				if valid {
+					sidNamesMu.Lock()
 					sidNames = newMap
+					sidNamesMu.Unlock()
 					// Request pubkeys for all online users
 					for _, name := range names {
 						pubkeyMu.RLock()
@@ -729,17 +751,19 @@ func readLoop(loginDone chan bool, historyDone chan struct{}) {
 					continue
 				}
 				name := string(payload[3 : 3+nLen])
+				sidNamesMu.Lock()
 				sidNames[sid] = name
+				allNames := make([]string, 0, len(sidNames))
+				for _, n := range sidNames {
+					allNames = append(allNames, n)
+				}
+				sidNamesMu.Unlock()
 				// Request pubkey for the new user
 				pubkeyMu.RLock()
 				_, have := knownPubkeys[name]
 				pubkeyMu.RUnlock()
 				if !have {
 					sendPublicKeyRequest(name)
-				}
-				allNames := make([]string, 0, len(sidNames))
-				for _, n := range sidNames {
-					allNames = append(allNames, n)
 				}
 				fmt.Printf("\n🟢 Онлайн (%d): %s\n>> ", len(allNames), strings.Join(allNames, ", "))
 
@@ -748,11 +772,13 @@ func readLoop(loginDone chan bool, historyDone chan struct{}) {
 					continue
 				}
 				sid := uint16(payload[0])<<8 | uint16(payload[1])
+				sidNamesMu.Lock()
 				delete(sidNames, sid)
 				allNames := make([]string, 0, len(sidNames))
 				for _, n := range sidNames {
 					allNames = append(allNames, n)
 				}
+				sidNamesMu.Unlock()
 				fmt.Printf("\n🟢 Онлайн (%d): %s\n>> ", len(allNames), strings.Join(allNames, ", "))
 
 			case CmdServerList:
@@ -774,7 +800,9 @@ func readLoop(loginDone chan bool, historyDone chan struct{}) {
 					servers = append(servers, string(payload[off:off+aLen]))
 					off += aLen
 				}
+				knownServersMu.Lock()
 				knownServers = servers
+				knownServersMu.Unlock()
 				if len(servers) > 0 {
 					fmt.Printf("\n📡 Серверы сети (%d): %s\n>> ", len(servers), strings.Join(servers, ", "))
 				}
@@ -1071,8 +1099,14 @@ func sendDM(recipientLogin, text string) {
 
 	msgKey := make([]byte, 32)
 	nonce := make([]byte, 12)
-	rand.Read(msgKey)  //nolint:errcheck
-	rand.Read(nonce)   //nolint:errcheck
+	if _, err := rand.Read(msgKey); err != nil {
+		fmt.Println("❌ Ошибка генерации msgKey:", err)
+		return
+	}
+	if _, err := rand.Read(nonce); err != nil {
+		fmt.Println("❌ Ошибка генерации nonce:", err)
+		return
+	}
 
 	aead, err := chacha20poly1305.New(msgKey)
 	if err != nil {
@@ -1277,8 +1311,14 @@ func sendRoomMessage(roomID uint32, text string) {
 
 	msgKey := make([]byte, 32)
 	nonce := make([]byte, 12)
-	rand.Read(msgKey)  //nolint:errcheck
-	rand.Read(nonce)   //nolint:errcheck
+	if _, err := rand.Read(msgKey); err != nil {
+		fmt.Println("❌ Ошибка генерации msgKey:", err)
+		return
+	}
+	if _, err := rand.Read(nonce); err != nil {
+		fmt.Println("❌ Ошибка генерации nonce:", err)
+		return
+	}
 
 	aead, err := chacha20poly1305.New(msgKey)
 	if err != nil {
