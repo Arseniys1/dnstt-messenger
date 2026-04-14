@@ -15,7 +15,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 
-enum class Screen { LOGIN, CHAT }
+enum class Screen { LOGIN, CHAT, DM, ROOM }
 
 data class DMConversation(
     val partner: String,
@@ -42,7 +42,12 @@ data class UiState(
     val config: AppConfig = AppConfig(),
     val knownServers: List<String> = emptyList(),
     val dmConversations: Map<String, List<ChatMessage>> = emptyMap(),
-    val rooms: Map<Long, RoomState> = emptyMap()
+    val rooms: Map<Long, RoomState> = emptyMap(),
+    val currentDMPartner: String = "",
+    val currentRoomId: Long = 0L,
+    val unreadDMs: Map<String, Int> = emptyMap(),
+    val unreadRooms: Map<Long, Int> = emptyMap(),
+    val pendingRoomJoin: Long = 0L  // Room ID we're trying to join
 )
 
 class MessengerViewModel(app: Application) : AndroidViewModel(app) {
@@ -223,12 +228,28 @@ class MessengerViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---- Room actions ----
     fun createRoom(name: String, isPublic: Boolean, description: String = "") {
-        service?.createRoom(name, isPublic, description)
+        viewModelScope.launch {
+            service?.createRoom(name, isPublic, description)
+        }
     }
 
-    fun joinRoom(roomId: Long) { service?.joinRoom(roomId) }
-    fun leaveRoom(roomId: Long) { service?.leaveRoom(roomId) }
-    fun inviteToRoom(roomId: Long, username: String) { service?.inviteToRoom(roomId, username) }
+    fun joinRoom(roomId: Long) {
+        viewModelScope.launch {
+            service?.joinRoom(roomId)
+        }
+    }
+    
+    fun leaveRoom(roomId: Long) {
+        viewModelScope.launch {
+            service?.leaveRoom(roomId)
+        }
+    }
+    
+    fun inviteToRoom(roomId: Long, username: String) {
+        viewModelScope.launch {
+            service?.inviteToRoom(roomId, username)
+        }
+    }
 
     fun sendRoomMessage(roomId: Long, text: String) {
         val trimmed = text.trim()
@@ -256,9 +277,60 @@ class MessengerViewModel(app: Application) : AndroidViewModel(app) {
             status = "",
             isLoading = false,
             dmConversations = emptyMap(),
-            rooms = emptyMap()
+            rooms = emptyMap(),
+            currentDMPartner = "",
+            currentRoomId = 0L,
+            unreadDMs = emptyMap(),
+            unreadRooms = emptyMap(),
+            pendingRoomJoin = 0L
         )
         startAndBindService()
+    }
+
+    // ---- Navigation ----
+    fun switchToGlobalChat() {
+        _state.value = _state.value.copy(screen = Screen.CHAT, currentDMPartner = "", currentRoomId = 0L)
+    }
+
+    fun switchToDM(partner: String) {
+        val updated = _state.value.unreadDMs.toMutableMap()
+        updated.remove(partner)
+        _state.value = _state.value.copy(
+            screen = Screen.DM,
+            currentDMPartner = partner,
+            currentRoomId = 0L,
+            unreadDMs = updated
+        )
+    }
+
+    fun switchToRoom(roomId: Long) {
+        val updated = _state.value.unreadRooms.toMutableMap()
+        updated.remove(roomId)
+        
+        // Check if room exists in state
+        val room = _state.value.rooms[roomId]
+        if (room == null) {
+            // Room not in state yet, mark as pending and join
+            _state.value = _state.value.copy(
+                pendingRoomJoin = roomId,
+                unreadRooms = updated
+            )
+            joinRoom(roomId)
+            return
+        }
+        
+        _state.value = _state.value.copy(
+            screen = Screen.ROOM,
+            currentDMPartner = "",
+            currentRoomId = roomId,
+            unreadRooms = updated,
+            pendingRoomJoin = 0L
+        )
+        
+        // Auto-join public rooms if not a member
+        if (room.isPublic && !room.members.contains(_state.value.myUsername)) {
+            joinRoom(roomId)
+        }
     }
 
     // ---- Handle events ----
@@ -311,7 +383,15 @@ class MessengerViewModel(app: Application) : AndroidViewModel(app) {
                 val now = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault()).format(java.util.Date())
                 val msg = ChatMessage(sender = event.sender, text = event.text, time = event.time, own = false)
                 updated[event.sender] = (updated[event.sender] ?: emptyList()) + msg
-                _state.value = _state.value.copy(dmConversations = updated)
+                
+                // Increment unread if not viewing this DM
+                val unread = if (_state.value.screen != Screen.DM || _state.value.currentDMPartner != event.sender) {
+                    val counts = _state.value.unreadDMs.toMutableMap()
+                    counts[event.sender] = (counts[event.sender] ?: 0) + 1
+                    counts
+                } else _state.value.unreadDMs
+                
+                _state.value = _state.value.copy(dmConversations = updated, unreadDMs = unread)
             }
             is ServerEvent.DMHistory -> {
                 val partner = if (event.sender == _state.value.myUsername) event.recipient else event.sender
@@ -336,7 +416,17 @@ class MessengerViewModel(app: Application) : AndroidViewModel(app) {
                 val existing = updatedRooms[event.id]
                 updatedRooms[event.id] = existing?.copy(name = event.name, isPublic = event.isPublic, owner = event.owner)
                     ?: RoomState(event.id, event.name, event.isPublic, event.owner)
-                _state.value = _state.value.copy(rooms = updatedRooms)
+                
+                // Check if this is the room we're waiting to join
+                val shouldSwitch = _state.value.pendingRoomJoin == event.id || 
+                                  (event.owner == _state.value.myUsername && existing == null)
+                
+                _state.value = _state.value.copy(
+                    rooms = updatedRooms,
+                    screen = if (shouldSwitch) Screen.ROOM else _state.value.screen,
+                    currentRoomId = if (shouldSwitch) event.id else _state.value.currentRoomId,
+                    pendingRoomJoin = if (shouldSwitch) 0L else _state.value.pendingRoomJoin
+                )
             }
             is ServerEvent.RoomMembers -> {
                 val updatedRooms = _state.value.rooms.toMutableMap()
@@ -357,12 +447,19 @@ class MessengerViewModel(app: Application) : AndroidViewModel(app) {
                 val room = updatedRooms[event.roomId]
                 if (room != null) {
                     if (event.login == _state.value.myUsername) {
+                        // We were removed from the room
                         updatedRooms.remove(event.roomId)
+                        val newState = _state.value.copy(rooms = updatedRooms)
+                        _state.value = if (_state.value.screen == Screen.ROOM && _state.value.currentRoomId == event.roomId) {
+                            newState.copy(screen = Screen.CHAT, currentRoomId = 0L)
+                        } else {
+                            newState
+                        }
                     } else {
                         updatedRooms[event.roomId] = room.copy(members = room.members.filter { it != event.login })
+                        _state.value = _state.value.copy(rooms = updatedRooms)
                     }
                 }
-                _state.value = _state.value.copy(rooms = updatedRooms)
             }
             is ServerEvent.RoomMessage -> {
                 val updatedRooms = _state.value.rooms.toMutableMap()
@@ -371,8 +468,16 @@ class MessengerViewModel(app: Application) : AndroidViewModel(app) {
                     val own = event.sender == _state.value.myUsername
                     val msg = ChatMessage(sender = event.sender, text = event.text, time = event.time, own = own)
                     updatedRooms[event.roomId] = room.copy(messages = room.messages + msg)
+                    
+                    // Increment unread if not viewing this room
+                    val unread = if (_state.value.screen != Screen.ROOM || _state.value.currentRoomId != event.roomId) {
+                        val counts = _state.value.unreadRooms.toMutableMap()
+                        counts[event.roomId] = (counts[event.roomId] ?: 0) + 1
+                        counts
+                    } else _state.value.unreadRooms
+                    
+                    _state.value = _state.value.copy(rooms = updatedRooms, unreadRooms = unread)
                 }
-                _state.value = _state.value.copy(rooms = updatedRooms)
             }
             is ServerEvent.RoomHistoryMsg -> {
                 val updatedRooms = _state.value.rooms.toMutableMap()

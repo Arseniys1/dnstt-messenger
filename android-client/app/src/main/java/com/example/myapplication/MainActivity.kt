@@ -85,6 +85,8 @@ fun MessengerApp(vm: MessengerViewModel = viewModel()) {
     when (state.screen) {
         Screen.LOGIN -> LoginScreen(state, vm)
         Screen.CHAT  -> ChatScreen(state, vm)
+        Screen.DM    -> DMScreen(state, vm)
+        Screen.ROOM  -> RoomScreen(state, vm)
     }
 }
 
@@ -256,7 +258,7 @@ fun LoginScreen(state: UiState, vm: MessengerViewModel) {
 @Composable
 fun ChatScreen(state: UiState, vm: MessengerViewModel) {
     var msgText by remember { mutableStateOf("") }
-    var showOnline by remember { mutableStateOf(false) }
+    var showSidebar by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
 
     BackHandler { vm.logout() }
@@ -270,11 +272,13 @@ fun ChatScreen(state: UiState, vm: MessengerViewModel) {
         topBar = {
             @OptIn(ExperimentalMaterial3Api::class)
             TopAppBar(
-                title = { Text(state.myUsername, fontWeight = FontWeight.Bold) },
-                actions = {
-                    IconButton(onClick = { showOnline = !showOnline }) {
-                        Icon(Icons.Default.Person, contentDescription = "Онлайн")
+                title = { Text("# Общий чат", fontWeight = FontWeight.Bold) },
+                navigationIcon = {
+                    IconButton(onClick = { showSidebar = !showSidebar }) {
+                        Icon(Icons.Default.Person, contentDescription = "Меню")
                     }
+                },
+                actions = {
                     IconButton(onClick = { vm.logout() }) {
                         Icon(Icons.AutoMirrored.Filled.ExitToApp, contentDescription = "Выйти")
                     }
@@ -318,6 +322,9 @@ fun ChatScreen(state: UiState, vm: MessengerViewModel) {
         }
     ) { padding ->
         Row(modifier = Modifier.padding(padding).fillMaxSize()) {
+            if (showSidebar) {
+                NavigationSidebar(state, vm, onDismiss = { showSidebar = false })
+            }
             LazyColumn(
                 state = listState,
                 modifier = Modifier.weight(1f).fillMaxHeight(),
@@ -326,31 +333,6 @@ fun ChatScreen(state: UiState, vm: MessengerViewModel) {
             ) {
                 items(state.messages) { msg ->
                     MessageBubble(msg)
-                }
-            }
-
-            if (showOnline) {
-                Divider(modifier = Modifier.fillMaxHeight().width(1.dp))
-                Column(
-                    modifier = Modifier
-                        .width(120.dp)
-                        .fillMaxHeight()
-                        .padding(8.dp)
-                ) {
-                    Text("Онлайн", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                    Spacer(Modifier.height(4.dp))
-                    state.onlineUsers.forEach { user ->
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Box(
-                                Modifier
-                                    .size(8.dp)
-                                    .background(Color(0xFF4CAF50), RoundedCornerShape(50))
-                            )
-                            Spacer(Modifier.width(4.dp))
-                            Text(user, fontSize = 12.sp, maxLines = 1)
-                        }
-                        Spacer(Modifier.height(2.dp))
-                    }
                 }
             }
         }
@@ -395,4 +377,548 @@ fun MessageBubble(msg: ChatMessage) {
             }
         }
     }
+}
+
+
+// ---- Navigation Sidebar ----
+@Composable
+fun NavigationSidebar(state: UiState, vm: MessengerViewModel, onDismiss: () -> Unit) {
+    var showNewDMDialog by remember { mutableStateOf(false) }
+    var showNewRoomDialog by remember { mutableStateOf(false) }
+
+    Surface(
+        modifier = Modifier
+            .fillMaxHeight()
+            .width(280.dp),
+        color = MaterialTheme.colorScheme.surface,
+        tonalElevation = 2.dp
+    ) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            // Header
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(state.myUsername, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                IconButton(onClick = onDismiss) {
+                    Text("✕", fontSize = 20.sp)
+                }
+            }
+            Divider()
+
+            LazyColumn(modifier = Modifier.weight(1f)) {
+                // Global chat
+                item {
+                    Text(
+                        "Чаты",
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                item {
+                    NavigationItem(
+                        text = "# Общий чат",
+                        selected = state.screen == Screen.CHAT,
+                        onClick = { vm.switchToGlobalChat(); onDismiss() }
+                    )
+                }
+
+                // DMs
+                item {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            "Личные сообщения",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        IconButton(
+                            onClick = { showNewDMDialog = true },
+                            modifier = Modifier.size(24.dp)
+                        ) {
+                            Text("+", fontSize = 18.sp)
+                        }
+                    }
+                }
+                items(state.dmConversations.keys.toList()) { partner ->
+                    val unread = state.unreadDMs[partner] ?: 0
+                    NavigationItem(
+                        text = "💬 $partner",
+                        selected = state.screen == Screen.DM && state.currentDMPartner == partner,
+                        onClick = { vm.switchToDM(partner); onDismiss() },
+                        badge = if (unread > 0) unread else null
+                    )
+                }
+
+                // Rooms
+                item {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            "Комнаты",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        IconButton(
+                            onClick = { showNewRoomDialog = true },
+                            modifier = Modifier.size(24.dp)
+                        ) {
+                            Text("+", fontSize = 18.sp)
+                        }
+                    }
+                }
+                items(state.rooms.values.toList()) { room ->
+                    val unread = state.unreadRooms[room.id] ?: 0
+                    val prefix = if (room.isPublic) "🌐" else "🔒"
+                    NavigationItem(
+                        text = "$prefix ${room.name}",
+                        selected = state.screen == Screen.ROOM && state.currentRoomId == room.id,
+                        onClick = { vm.switchToRoom(room.id); onDismiss() },
+                        badge = if (unread > 0) unread else null
+                    )
+                }
+
+                // Online users
+                item {
+                    Text(
+                        "Онлайн (${state.onlineUsers.size})",
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                items(state.onlineUsers) { user ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            Modifier
+                                .size(8.dp)
+                                .background(Color(0xFF4CAF50), RoundedCornerShape(50))
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(user, fontSize = 14.sp)
+                    }
+                }
+            }
+        }
+    }
+
+    if (showNewDMDialog) {
+        NewDMDialog(
+            onDismiss = { showNewDMDialog = false },
+            onConfirm = { username ->
+                vm.switchToDM(username)
+                showNewDMDialog = false
+                onDismiss()
+            }
+        )
+    }
+
+    if (showNewRoomDialog) {
+        NewRoomDialog(
+            onDismiss = { showNewRoomDialog = false },
+            onConfirm = { name, isPublic, description ->
+                vm.createRoom(name, isPublic, description)
+                showNewRoomDialog = false
+            }
+        )
+    }
+}
+
+@Composable
+fun NavigationItem(
+    text: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    badge: Int? = null
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 8.dp, vertical = 2.dp),
+        color = if (selected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent,
+        shape = RoundedCornerShape(8.dp),
+        onClick = onClick
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text,
+                fontSize = 14.sp,
+                fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                maxLines = 1,
+                modifier = Modifier.weight(1f)
+            )
+            if (badge != null && badge > 0) {
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = MaterialTheme.colorScheme.error
+                ) {
+                    Text(
+                        badge.toString(),
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onError,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+        }
+    }
+}
+
+// ---- DM Screen ----
+@Composable
+fun DMScreen(state: UiState, vm: MessengerViewModel) {
+    var msgText by remember { mutableStateOf("") }
+    var showSidebar by remember { mutableStateOf(false) }
+    val listState = rememberLazyListState()
+    val messages = state.dmConversations[state.currentDMPartner] ?: emptyList()
+
+    BackHandler { vm.switchToGlobalChat() }
+
+    LaunchedEffect(messages.size) {
+        if (messages.isNotEmpty())
+            listState.animateScrollToItem(messages.size - 1)
+    }
+
+    Scaffold(
+        topBar = {
+            @OptIn(ExperimentalMaterial3Api::class)
+            TopAppBar(
+                title = { Text("💬 ${state.currentDMPartner}", fontWeight = FontWeight.Bold) },
+                navigationIcon = {
+                    IconButton(onClick = { showSidebar = !showSidebar }) {
+                        Icon(Icons.Default.Person, contentDescription = "Меню")
+                    }
+                },
+                actions = {
+                    IconButton(onClick = { vm.switchToGlobalChat() }) {
+                        Text("←", fontSize = 24.sp)
+                    }
+                }
+            )
+        },
+        bottomBar = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .imePadding()
+                    .navigationBarsPadding()
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.Bottom
+                ) {
+                    OutlinedTextField(
+                        value = msgText,
+                        onValueChange = { msgText = it },
+                        placeholder = { Text("Сообщение для ${state.currentDMPartner}...") },
+                        modifier = Modifier.weight(1f),
+                        maxLines = 4,
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                        keyboardActions = KeyboardActions(onSend = {
+                            vm.sendDM(state.currentDMPartner, msgText); msgText = ""
+                        })
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    IconButton(
+                        onClick = { vm.sendDM(state.currentDMPartner, msgText); msgText = "" },
+                        enabled = msgText.isNotBlank()
+                    ) {
+                        Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Отправить",
+                            tint = MaterialTheme.colorScheme.primary)
+                    }
+                }
+            }
+        }
+    ) { padding ->
+        Row(modifier = Modifier.padding(padding).fillMaxSize()) {
+            if (showSidebar) {
+                NavigationSidebar(state, vm, onDismiss = { showSidebar = false })
+            }
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.weight(1f).fillMaxHeight(),
+                contentPadding = PaddingValues(8.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                items(messages) { msg ->
+                    MessageBubble(msg)
+                }
+            }
+        }
+    }
+}
+
+// ---- Room Screen ----
+@Composable
+fun RoomScreen(state: UiState, vm: MessengerViewModel) {
+    var msgText by remember { mutableStateOf("") }
+    var showSidebar by remember { mutableStateOf(false) }
+    var showInviteDialog by remember { mutableStateOf(false) }
+    val listState = rememberLazyListState()
+    val room = state.rooms[state.currentRoomId]
+    val messages = room?.messages ?: emptyList()
+
+    BackHandler { vm.switchToGlobalChat() }
+
+    LaunchedEffect(messages.size) {
+        if (messages.isNotEmpty())
+            listState.animateScrollToItem(messages.size - 1)
+    }
+
+    // Show loading if room is not loaded yet
+    if (room == null) {
+        Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center
+        ) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                CircularProgressIndicator()
+                Spacer(Modifier.height(16.dp))
+                Text("Загрузка комнаты...")
+            }
+        }
+        return
+    }
+
+    Scaffold(
+        topBar = {
+            @OptIn(ExperimentalMaterial3Api::class)
+            TopAppBar(
+                title = {
+                    Column {
+                        Text(
+                            "# ${room.name}",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 16.sp
+                        )
+                        Text(
+                            "${room.members.size} участников",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                },
+                navigationIcon = {
+                    IconButton(onClick = { showSidebar = !showSidebar }) {
+                        Icon(Icons.Default.Person, contentDescription = "Меню")
+                    }
+                },
+                actions = {
+                    IconButton(onClick = { showInviteDialog = true }) {
+                        Text("+", fontSize = 24.sp)
+                    }
+                    IconButton(onClick = { vm.leaveRoom(state.currentRoomId); vm.switchToGlobalChat() }) {
+                        Text("🚪", fontSize = 18.sp)
+                    }
+                }
+            )
+        },
+        bottomBar = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .imePadding()
+                    .navigationBarsPadding()
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.Bottom
+                ) {
+                    OutlinedTextField(
+                        value = msgText,
+                        onValueChange = { msgText = it },
+                        placeholder = { Text("Сообщение в комнату...") },
+                        modifier = Modifier.weight(1f),
+                        maxLines = 4,
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                        keyboardActions = KeyboardActions(onSend = {
+                            vm.sendRoomMessage(state.currentRoomId, msgText); msgText = ""
+                        })
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    IconButton(
+                        onClick = { vm.sendRoomMessage(state.currentRoomId, msgText); msgText = "" },
+                        enabled = msgText.isNotBlank()
+                    ) {
+                        Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Отправить",
+                            tint = MaterialTheme.colorScheme.primary)
+                    }
+                }
+            }
+        }
+    ) { padding ->
+        Row(modifier = Modifier.padding(padding).fillMaxSize()) {
+            if (showSidebar) {
+                NavigationSidebar(state, vm, onDismiss = { showSidebar = false })
+            }
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.weight(1f).fillMaxHeight(),
+                contentPadding = PaddingValues(8.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                items(messages) { msg ->
+                    MessageBubble(msg)
+                }
+            }
+        }
+    }
+
+    if (showInviteDialog) {
+        InviteToRoomDialog(
+            onDismiss = { showInviteDialog = false },
+            onConfirm = { username ->
+                vm.inviteToRoom(state.currentRoomId, username)
+                showInviteDialog = false
+            }
+        )
+    }
+}
+
+// ---- Dialogs ----
+@Composable
+fun NewDMDialog(onDismiss: () -> Unit, onConfirm: (String) -> Unit) {
+    var username by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Новое личное сообщение") },
+        text = {
+            OutlinedTextField(
+                value = username,
+                onValueChange = { username = it },
+                label = { Text("Логин пользователя") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+        },
+        confirmButton = {
+            Button(
+                onClick = { if (username.isNotBlank()) onConfirm(username) },
+                enabled = username.isNotBlank()
+            ) {
+                Text("Открыть")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Отмена")
+            }
+        }
+    )
+}
+
+@Composable
+fun NewRoomDialog(onDismiss: () -> Unit, onConfirm: (String, Boolean, String) -> Unit) {
+    var name by remember { mutableStateOf("") }
+    var description by remember { mutableStateOf("") }
+    var isPublic by remember { mutableStateOf(false) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Создать комнату") },
+        text = {
+            Column {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("Название комнаты") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = description,
+                    onValueChange = { description = it },
+                    label = { Text("Описание (необязательно)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(checked = isPublic, onCheckedChange = { isPublic = it })
+                    Text("Публичная (видна всем)")
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { if (name.isNotBlank()) onConfirm(name, isPublic, description) },
+                enabled = name.isNotBlank()
+            ) {
+                Text("Создать")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Отмена")
+            }
+        }
+    )
+}
+
+@Composable
+fun InviteToRoomDialog(onDismiss: () -> Unit, onConfirm: (String) -> Unit) {
+    var username by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Пригласить в комнату") },
+        text = {
+            OutlinedTextField(
+                value = username,
+                onValueChange = { username = it },
+                label = { Text("Логин пользователя") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+        },
+        confirmButton = {
+            Button(
+                onClick = { if (username.isNotBlank()) onConfirm(username) },
+                enabled = username.isNotBlank()
+            ) {
+                Text("Пригласить")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Отмена")
+            }
+        }
+    )
 }

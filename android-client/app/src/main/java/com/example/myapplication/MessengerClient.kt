@@ -746,11 +746,11 @@ class MessengerClient {
 
     // ─── Direct Messages ──────────────────────────────────────────────────────
 
-    fun sendDM(recipientLogin: String, text: String) {
-        val privKey = e2ePrivKey ?: return
+    suspend fun sendDM(recipientLogin: String, text: String) = withContext(Dispatchers.IO) {
+        val privKey = e2ePrivKey ?: return@withContext
         val recipPub = knownPubkeys[recipientLogin] ?: run {
             sendPublicKeyRequestInternal(recipientLogin)
-            return
+            return@withContext
         }
         val rng = SecureRandom()
         val msgKey = ByteArray(32).also { rng.nextBytes(it) }
@@ -759,7 +759,7 @@ class MessengerClient {
 
         data class Env(val login: String, val data: ByteArray)
         val envelopes = mutableListOf<Env>()
-        try { envelopes += Env(recipientLogin, sealEnvelope(recipPub, msgKey)) } catch (_: Exception) { return }
+        try { envelopes += Env(recipientLogin, sealEnvelope(recipPub, msgKey)) } catch (_: Exception) { return@withContext }
         val selfPub = knownPubkeys[myLogin] ?: e2ePubKey?.encoded
         if (selfPub != null && myLogin.isNotEmpty()) {
             try { envelopes += Env(myLogin, sealEnvelope(selfPub, msgKey)) } catch (_: Exception) {}
@@ -829,7 +829,7 @@ class MessengerClient {
 
     // ─── Rooms ────────────────────────────────────────────────────────────────
 
-    fun createRoom(name: String, isPublic: Boolean, description: String = "") {
+    suspend fun createRoom(name: String, isPublic: Boolean, description: String = "") = withContext(Dispatchers.IO) {
         val nb = name.toByteArray()
         val db = description.toByteArray()
         val descLenBuf = ByteArray(2).also {
@@ -841,7 +841,7 @@ class MessengerClient {
         writeFrame(Cmd.CREATE_ROOM, payload)
     }
 
-    fun joinRoom(roomId: Long) {
+    suspend fun joinRoom(roomId: Long) = withContext(Dispatchers.IO) {
         val buf = ByteArray(4)
         buf[0] = (roomId and 0xFF).toByte()
         buf[1] = ((roomId shr 8) and 0xFF).toByte()
@@ -850,7 +850,7 @@ class MessengerClient {
         writeFrame(Cmd.JOIN_ROOM, buf)
     }
 
-    fun leaveRoom(roomId: Long) {
+    suspend fun leaveRoom(roomId: Long) = withContext(Dispatchers.IO) {
         val buf = ByteArray(4)
         buf[0] = (roomId and 0xFF).toByte()
         buf[1] = ((roomId shr 8) and 0xFF).toByte()
@@ -859,7 +859,7 @@ class MessengerClient {
         writeFrame(Cmd.LEAVE_ROOM, buf)
     }
 
-    fun inviteToRoom(roomId: Long, username: String) {
+    suspend fun inviteToRoom(roomId: Long, username: String) = withContext(Dispatchers.IO) {
         val ub = username.toByteArray()
         val idBuf = ByteArray(4)
         idBuf[0] = (roomId and 0xFF).toByte()
@@ -869,7 +869,7 @@ class MessengerClient {
         writeFrame(Cmd.ROOM_INVITE, idBuf + byteArrayOf(ub.size.toByte()) + ub)
     }
 
-    fun sendRoomMessage(roomId: Long, text: String) {
+    suspend fun sendRoomMessage(roomId: Long, text: String) = withContext(Dispatchers.IO) {
         val rng = SecureRandom()
         val msgKey = ByteArray(32).also { rng.nextBytes(it) }
         val nonce  = ByteArray(12).also { rng.nextBytes(it) }
