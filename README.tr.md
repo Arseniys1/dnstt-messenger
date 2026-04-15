@@ -1,34 +1,59 @@
-# DNSTT Messenger - Tam Rehber (Türkçe)
+# DNSTT Messenger
 
-DNSTT Messenger, MasterDnsVPN ile DNS tünelleme üzerinden çalışabilen, uçtan uca şifreli (E2E) bir mesajlaşma sistemidir.
+Kısıtlı veya yoğun filtrelenen ağlar için DNS tüneli üzerinden çalışan, uçtan uca şifrelemeli (E2E) güvenli mesajlaşma sistemi.
+
+## Dokümantasyon Dilleri
+
+- English: [README.en.md](./README.en.md)
+- Русский: [README.ru.md](./README.ru.md)
+- 简体中文: [README.zh-CN.md](./README.zh-CN.md)
+- فارسی: [README.fa.md](./README.fa.md)
+- Türkçe: [README.tr.md](./README.tr.md)
+- العربية: [README.ar.md](./README.ar.md)
+- Tiếng Việt: [README.vi.md](./README.vi.md)
 
 ## İçindekiler
 
-- Bölüm A - Sunucu kurulumu (MasterDnsVPN + mesaj sunucusu)
-- Bölüm B - İstemci kurulumu (Windows/Electron/Android)
-- Bölüm C - Kaynaktan derleme
-- Sorun giderme ve güvenlik notları
+- [Proje Amacı](#proje-amacı)
+- [Temel Özellikler](#temel-özellikler)
+- [Bölüm A: Sunucu Kurulumu](#bölüm-a-sunucu-kurulumu)
+- [Bölüm B: İstemci Kurulumu](#bölüm-b-istemci-kurulumu)
+- [Bölüm C: Kaynaktan Derleme](#bölüm-c-kaynaktan-derleme)
+- [Sorun Giderme](#sorun-giderme)
+- [Güvenlik Önerileri](#güvenlik-önerileri)
+- [Lisans ve Sorumluluk](#lisans-ve-sorumluluk)
 
----
+## Proje Amacı
 
-## Bölüm A - Sunucu Kurulumu
+DNSTT Messenger, klasik iletişim kanallarının DPI veya DNS filtreleme nedeniyle kesildiği durumlar için tasarlandı.
+DNS taşıma katmanı, HTTPS/VPN erişimi sınırlı olduğunda bağlantıyı korumaya yardımcı olur.
+
+## Temel Özellikler
+
+- İstemciler arası uçtan uca şifreli mesajlaşma (E2E).
+- MasterDnsVPN ile DNS tüneli üzerinden mesaj taşıma.
+- Windows (Go CLI), Electron (masaüstü) ve Android istemcileri.
+- Çok dilli arayüz desteği.
+- Birden fazla sunucu arasında isteğe bağlı federation.
+
+## Bölüm A: Sunucu Kurulumu
 
 ### A1. Gereksinimler
 
-- Genel IP'li Linux VPS
-- Kontrol ettiğiniz bir alan adı
-- Temel terminal bilgisi
+- Genel IP'li Linux VPS.
+- DNS yönetimi erişimi olan alan adı.
+- Temel SSH/terminal erişimi.
 - Açık portlar:
-  - `53/udp` ve `53/tcp` (DNS)
-  - `9999/tcp` (mesaj sunucusu)
-  - `9998/tcp` (yalnızca federation için)
+  - DNS tüneli için `53/udp` ve `53/tcp`.
+  - Mesaj sunucusu için `9999/tcp`.
+  - Federation için (opsiyonel) `9998/tcp`.
 
-### A2. Tünel alan adı için DNS kayıtları
+### A2. Tünel DNS Kayıtları
 
 Örnek:
 
-- Ana alan adı: `example.com`
-- Tünel alanı: `t.example.com`
+- ana alan adı: `example.com`
+- tünel alanı: `t.example.com`
 - NS host: `ns1.example.com`
 
 Kayıtlar:
@@ -36,7 +61,12 @@ Kayıtlar:
 1. `A`: `ns1.example.com -> <VPS_IP>`
 2. `NS`: `t.example.com -> ns1.example.com`
 
-### A3. MasterDnsVPN Server kurulum/çalıştırma
+Kontrol:
+
+- `dig NS example.com`
+- `dig t.example.com`
+
+### A3. MasterDnsVPN Server Kurulumu
 
 ```bash
 wget https://github.com/masterking32/MasterDnsVPN/releases/latest/download/MasterDnsVPN_Server_Linux_AMD64.zip
@@ -51,13 +81,13 @@ DOMAINS = ["t.example.com"]
 ENCRYPTION_KEY = "replace_with_strong_random_key"
 ```
 
-Çalıştır:
+Çalıştırma:
 
 ```bash
 ./MasterDnsVPN_Server
 ```
 
-### A4. Mesaj sunucusunu çalıştırma
+### A4. Mesaj Sunucusunu Çalıştırma
 
 `server` ikilisinin yanına `config.json`:
 
@@ -69,13 +99,13 @@ ENCRYPTION_KEY = "replace_with_strong_random_key"
 }
 ```
 
-Başlat:
+Çalıştırma:
 
 ```bash
 ./server
 ```
 
-### A5. Federation (isteğe bağlı)
+### A5. Federation (Opsiyonel)
 
 ```json
 {
@@ -92,22 +122,21 @@ Başlat:
 }
 ```
 
-### A6. İstemcilere verilecek bilgiler
+`s2s_secret`, tüm federation düğümlerinde aynı olmalıdır.
 
-- `server_addr`
-- tünel alan adı (`DOMAINS`)
-- tünel şifreleme anahtarı (`ENCRYPTION_KEY`)
+### A6. Kullanıcılara Verilecek Bilgiler
 
----
+- `server_addr` (ör. `1.2.3.4:9999`)
+- `DOMAINS` (tünel alanı)
+- `ENCRYPTION_KEY` (tünel anahtarı)
 
-## Bölüm B - İstemci Kurulumu
+## Bölüm B: İstemci Kurulumu
 
-### B1. MasterDnsVPN Client ayarı
+### B1. MasterDnsVPN Client Yapılandırması
 
-1. Releases sayfasından indir:  
-   [https://github.com/masterking32/MasterDnsVPN/releases](https://github.com/masterking32/MasterDnsVPN/releases)
-2. Arşivi çıkar.
-3. `client_config.toml` dosyasını düzenle:
+1. [MasterDnsVPN Releases](https://github.com/masterking32/MasterDnsVPN/releases) sayfasından indirin.
+2. Arşivi çıkarın.
+3. `client_config.toml` düzenleyin:
 
 ```toml
 DOMAINS = ["t.example.com"]
@@ -117,9 +146,11 @@ LISTEN_PORT = 18000
 PROTOCOL_TYPE = "SOCKS5"
 ```
 
-4. MasterDnsVPN’i çalıştır ve açık bırak.
+4. MasterDnsVPN'i çalıştırın ve açık bırakın.
 
-### B2. Messenger istemci ayarı
+### B2. Messenger Ayarı
+
+`client_config.json`:
 
 ```json
 {
@@ -129,32 +160,45 @@ PROTOCOL_TYPE = "SOCKS5"
 }
 ```
 
-### B3. Giriş ve uygulama içi ayarlar
+### B3. İstemcileri Başlatma
 
-- Uygulama içi Settings ekranını aç
-- Dil/sunucu/proxy ayarlarını kaydet
-- Kayıt ol veya giriş yap
+- Go CLI: Windows `client.exe`, Linux/macOS `./client`
+- Electron: `electron-client` klasöründen
+- Android: `android-client` içinden APK veya release
 
-### B4. Android
+### B4. Giriş ve Kayıt
 
-- APK kur veya `android-client` klasöründen derle
-- Masaüstündeki aynı bağlantı değerlerini kullan
+1. İstemciyi açın.
+2. Kullanıcı adı ve parola girin.
+3. İlk kullanımda hesap oluşturun.
+4. Giriş sonrası dil/proxy/sunucu ayarlarını kontrol edin.
 
----
+### B5. Android Notu
 
-## Bölüm C - Kaynaktan Derleme
+- Masaüstü ile aynı `server_addr`, `DOMAINS`, `ENCRYPTION_KEY` değerlerini kullanın.
+- Proxy ayarlarının Android kurulumunuzla uyumlu olduğundan emin olun.
 
-### C1. Gerekli araçlar
+## Bölüm C: Kaynaktan Derleme
 
-- Go `1.21+`
-- Node.js `18+` + `npm`
-- Android Studio / Android SDK
+### C1. Gereksinimler
 
-### C2. Go
+- `Go 1.21+`
+- `Node.js 18+` ve `npm`
+- `Android Studio` + `Android SDK`
+
+### C2. Go Sunucu ve İstemci Derleme
 
 ```bash
 go build -o server ./server
 go build -o client ./client
+```
+
+Çapraz derleme örnekleri:
+
+```bash
+GOOS=linux GOARCH=amd64 go build -o server-linux-amd64 ./server
+GOOS=windows GOARCH=amd64 go build -o server.exe ./server
+GOOS=darwin GOARCH=arm64 go build -o server-mac-arm64 ./server
 ```
 
 ### C3. Electron
@@ -180,26 +224,44 @@ cd android-client
 ./gradlew assembleRelease
 ```
 
----
+Windows:
+
+```cmd
+gradlew.bat assembleRelease
+```
 
 ## Sorun Giderme
 
-- Bağlantı kurulamıyor:
-  - `server_addr` kontrol et
-  - firewall portlarını kontrol et
-  - servislerin çalıştığını doğrula
-- Tünel açık ama mesajlar gitmiyor:
-  - `DOMAINS` ve `ENCRYPTION_KEY` aynı olmalı
-  - SOCKS5 `127.0.0.1:18000` olmalı
-- Giriş hatası:
-  - kullanıcı adı/parola kontrol et
-  - sunucu loglarını incele
+### İstemci Bağlanamıyor
 
----
+- `server_addr` kontrol edin.
+- Firewall ve port durumunu kontrol edin.
+- Sunucu süreçlerinin çalıştığını doğrulayın.
 
-## Güvenlik Notları
+### Tünel Var Ama Sohbet Çalışmıyor
 
-- Tünel anahtarını gizli tut.
-- Güçlü parolalar kullan.
-- Sunucu ve bağımlılıkları güncel tut.
-- Sızıntı şüphesinde anahtarları hemen değiştir.
+- `DOMAINS` ve `ENCRYPTION_KEY` sunucu ile aynı olmalı.
+- SOCKS5 endpoint `127.0.0.1:18000` olmalı.
+
+### Giriş Hatası
+
+- Kullanıcı adı/parola kontrol edin.
+- Kimlik doğrulama hataları için sunucu loglarını inceleyin.
+
+### Yerelleştirme Sorunları (Mojibake)
+
+- Çeviri dosyalarının UTF-8 olduğundan emin olun.
+- Fallback locale ve çeviri anahtarlarını kontrol edin.
+
+## Güvenlik Önerileri
+
+- Uzun rastgele anahtarlar kullanın ve düzenli döndürün.
+- Production sunucu adreslerini herkese açık paylaşmayın.
+- Test ve production ortamlarını ayırın.
+- SSH erişimini kısıtlayın (anahtar, firewall, fail2ban).
+- Loglarda hassas veriyi minimumda tutun.
+
+## Lisans ve Sorumluluk
+
+Production dağıtımı öncesinde bu depodaki güncel lisansı kontrol edin.
+Yerel yasalara ve kurum politikalarına uyumluluk sizin sorumluluğunuzdadır.

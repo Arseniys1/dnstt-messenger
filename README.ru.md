@@ -1,44 +1,72 @@
-# DNSTT Messenger - Полный гайд (Русский)
+# DNSTT Messenger
 
-Мессенджер со сквозным шифрованием (E2E), который может работать через DNS-туннель (MasterDnsVPN) в сетях с жёсткой цензурой.
+Безопасный мессенджер со сквозным шифрованием (E2E) и транспортом через DNS-туннель для сетей с жесткой фильтрацией и блокировками.
+
+## Языки документации
+
+- English: [README.en.md](./README.en.md)
+- Русский: [README.ru.md](./README.ru.md)
+- 简体中文: [README.zh-CN.md](./README.zh-CN.md)
+- فارسی: [README.fa.md](./README.fa.md)
+- Türkçe: [README.tr.md](./README.tr.md)
+- العربية: [README.ar.md](./README.ar.md)
+- Tiếng Việt: [README.vi.md](./README.vi.md)
 
 ## Содержание
 
-- Часть A - Настройка сервера (MasterDnsVPN + сервер мессенджера)
-- Часть B - Настройка клиента (Windows/Electron/Android)
-- Часть C - Сборка из исходников
-- Диагностика и заметки по безопасности
+- [Назначение проекта](#назначение-проекта)
+- [Основные возможности](#основные-возможности)
+- [Часть A: Настройка сервера](#часть-a-настройка-сервера)
+- [Часть B: Настройка клиента](#часть-b-настройка-клиента)
+- [Часть C: Сборка из исходников](#часть-c-сборка-из-исходников)
+- [Диагностика и частые проблемы](#диагностика-и-частые-проблемы)
+- [Рекомендации по безопасности](#рекомендации-по-безопасности)
+- [Лицензия и ответственность](#лицензия-и-ответственность)
 
----
+## Назначение проекта
 
-## Часть A - Настройка сервера
+DNSTT Messenger предназначен для ситуаций, где обычные каналы связи нестабильны или блокируются DPI/фильтрацией DNS.
+Транспорт через DNS позволяет сохранить связность там, где HTTPS/VPN может быть ограничен.
 
-### A1. Что нужно
+## Основные возможности
 
-- Linux VPS с белым IP
-- Ваш домен
-- Базовый доступ к терминалу
+- Сквозное шифрование сообщений между клиентами (E2E).
+- Передача данных через DNS-туннель (MasterDnsVPN).
+- Клиенты для Windows (Go CLI), Electron (desktop) и Android.
+- Поддержка многоязычного интерфейса.
+- Опциональная федерация между несколькими серверами.
+
+## Часть A: Настройка сервера
+
+### A1. Что требуется
+
+- Linux VPS с публичным IP.
+- Домен с доступом к управлению DNS-зоной.
+- Базовый доступ по SSH.
 - Открытые порты:
-  - `53/udp` и `53/tcp` для DNS
-  - `9999/tcp` для сервера мессенджера
-  - `9998/tcp` только если включена federation
+  - `53/udp` и `53/tcp` для DNS-туннеля.
+  - `9999/tcp` для сервера мессенджера.
+  - `9998/tcp` только если используется федерация.
 
-### A2. DNS-записи для туннельного домена
+### A2. DNS-записи для туннеля
 
 Пример:
 
-- Базовый домен: `example.com`
-- Зона туннеля: `t.example.com`
-- DNS-хост: `ns1.example.com`
+- основной домен: `example.com`
+- зона туннеля: `t.example.com`
+- NS-хост: `ns1.example.com`
 
-Создайте записи:
+Создайте записи у регистратора:
 
 1. `A`: `ns1.example.com -> <IP_VPS>`
 2. `NS`: `t.example.com -> ns1.example.com`
 
-После распространения DNS запросы к `*.t.example.com` должны приходить на ваш VPS.
+Проверка:
 
-### A3. Установка и запуск MasterDnsVPN Server
+- `dig NS example.com`
+- `dig t.example.com`
+
+### A3. Установка MasterDnsVPN Server
 
 ```bash
 wget https://github.com/masterking32/MasterDnsVPN/releases/latest/download/MasterDnsVPN_Server_Linux_AMD64.zip
@@ -46,11 +74,11 @@ unzip MasterDnsVPN_Server_Linux_AMD64.zip
 cd MasterDnsVPN_Server_Linux_AMD64
 ```
 
-Отредактируйте `server_config.toml`:
+Настройте `server_config.toml`:
 
 ```toml
 DOMAINS = ["t.example.com"]
-ENCRYPTION_KEY = "замените_на_длинный_случайный_ключ"
+ENCRYPTION_KEY = "replace_with_strong_random_key"
 ```
 
 Запуск:
@@ -93,9 +121,9 @@ WantedBy=multi-user.target
 ./server
 ```
 
-### A5. Federation (опционально)
+### A5. Федерация (опционально)
 
-Если у вас несколько серверов:
+Для сети из нескольких серверов:
 
 ```json
 {
@@ -103,88 +131,100 @@ WantedBy=multi-user.target
   "db_path": "./messenger.db",
   "history_limit": 50,
   "s2s_addr": "0.0.0.0:9998",
-  "public_addr": "ПУБЛИЧНЫЙ_IP_ИЛИ_ХОСТ:9999",
+  "public_addr": "PUBLIC_IP_OR_HOST:9999",
   "gossip_enabled": true,
   "gossip_interval_sec": 60,
-  "peers": ["АДРЕС_ПИРА:9998"],
-  "s2s_secret": "общий_секрет_на_всех_узлах",
+  "peers": ["PEER_S2S_ADDR:9998"],
+  "s2s_secret": "shared_secret_for_all_nodes",
   "federation_sync_days": 7
 }
 ```
 
-`s2s_secret` должен совпадать на всех нодах.
+`s2s_secret` должен совпадать на всех узлах.
 
-### A6. Что нужно передать клиентам
+### A6. Что передать пользователям
 
-- `server_addr` (мессенджер)
-- домен туннеля (`DOMAINS`)
-- ключ шифрования туннеля (`ENCRYPTION_KEY`)
+- `server_addr` (адрес сервера мессенджера, например `1.2.3.4:9999`)
+- `DOMAINS` (домен DNS-туннеля)
+- `ENCRYPTION_KEY` (ключ туннеля)
 
----
+## Часть B: Настройка клиента
 
-## Часть B - Настройка клиента
+### B1. Настройка MasterDnsVPN Client
 
-### B1. MasterDnsVPN client
-
-1. Скачайте релиз:  
-   [https://github.com/masterking32/MasterDnsVPN/releases](https://github.com/masterking32/MasterDnsVPN/releases)
+1. Скачайте клиент с [MasterDnsVPN Releases](https://github.com/masterking32/MasterDnsVPN/releases).
 2. Распакуйте архив.
 3. Отредактируйте `client_config.toml`:
 
 ```toml
 DOMAINS = ["t.example.com"]
-ENCRYPTION_KEY = "тот_же_ключ_что_на_сервере"
+ENCRYPTION_KEY = "same_key_as_server"
 LISTEN_IP = "127.0.0.1"
 LISTEN_PORT = 18000
 PROTOCOL_TYPE = "SOCKS5"
 ```
 
-4. Запустите MasterDnsVPN и не закрывайте.
+4. Запустите MasterDnsVPN и держите его включенным.
 
 ### B2. Конфиг мессенджера
+
+Настройте `client_config.json`:
 
 ```json
 {
   "proxy_addr": "127.0.0.1:18000",
-  "server_addr": "IP_ИЛИ_ХОСТ_СЕРВЕРА:9999",
+  "server_addr": "SERVER_IP_OR_HOST:9999",
   "direct_mode": false
 }
 ```
 
-### B3. Вход и настройки
+### B3. Запуск клиентов
 
-- Откройте настройки (доступны прямо внутри активной сессии)
-- Выставьте язык, сервер, proxy
-- Сохраните и войдите/зарегистрируйтесь
+- Go-клиент (консоль): `client.exe` (Windows) или `./client` (Linux/macOS)
+- Electron-клиент: запуск из папки `electron-client`
+- Android-клиент: APK из `android-client` или готовый релиз
 
-### B4. Android
+### B4. Вход и регистрация
 
-- Поставьте APK или соберите из `android-client`
-- Используйте те же параметры подключения, что и на desktop
+1. Запустите клиент.
+2. Введите логин и пароль.
+3. Для первого входа создайте аккаунт.
+4. После входа проверьте язык/прокси/адрес сервера в настройках.
 
----
+### B5. Android заметка
 
-## Часть C - Сборка из исходников
+- На Android используйте те же `server_addr`, `DOMAINS`, `ENCRYPTION_KEY`.
+- Убедитесь, что локальный прокси настроен как в вашей схеме запуска.
+
+## Часть C: Сборка из исходников
 
 ### C1. Требования
 
-- Go `1.21+`
-- Node.js `18+` и `npm`
-- Android Studio / Android SDK (для Android)
+- `Go 1.21+`
+- `Node.js 18+` и `npm`
+- `Android Studio` + `Android SDK` (для Android-клиента)
 
-### C2. Go сервер/клиент
+### C2. Сборка Go-сервера и Go-клиента
 
 ```bash
 go build -o server ./server
 go build -o client ./client
 ```
 
-Кросс-сборка:
+Примеры кросс-сборки:
 
 ```bash
 GOOS=linux GOARCH=amd64 go build -o server-linux-amd64 ./server
 GOOS=windows GOARCH=amd64 go build -o server.exe ./server
 GOOS=darwin GOARCH=arm64 go build -o server-mac-arm64 ./server
+```
+
+PowerShell (Windows):
+
+```powershell
+$env:GOOS="linux"; $env:GOARCH="amd64"; go build -o server-linux-amd64 ./server
+$env:GOOS="windows"; $env:GOARCH="amd64"; go build -o server.exe ./server
+Remove-Item Env:GOOS; Remove-Item Env:GOARCH
 ```
 
 ### C3. Electron
@@ -195,7 +235,7 @@ npm install
 npm start
 ```
 
-Пакеты:
+Сборка пакетов:
 
 ```bash
 npm run build:win
@@ -216,26 +256,38 @@ Windows:
 gradlew.bat assembleRelease
 ```
 
----
+## Диагностика и частые проблемы
 
-## Частые проблемы
+### Клиент не подключается
 
-- Connection refused:
-  - проверьте `server_addr`
-  - проверьте firewall
-  - проверьте, что сервер запущен
-- Туннель поднят, но чата нет:
-  - `DOMAINS` и `ENCRYPTION_KEY` должны совпадать
-  - SOCKS5 должен слушать `127.0.0.1:18000`
-- Ошибка входа:
-  - проверьте логин/пароль
-  - проверьте логи сервера
+- Проверьте `server_addr`.
+- Проверьте firewall и доступность портов.
+- Проверьте, что серверы действительно запущены.
 
----
+### Туннель поднят, но чат не работает
 
-## Безопасность
+- `DOMAINS` и `ENCRYPTION_KEY` должны совпадать с серверными.
+- SOCKS5 endpoint должен быть `127.0.0.1:18000`.
 
-- Храните ключи туннеля в секрете.
-- Используйте сложные уникальные пароли.
-- Обновляйте сервер и зависимости.
-- При подозрении на компрометацию меняйте ключи немедленно.
+### Ошибка входа
+
+- Проверьте логин и пароль.
+- Проверьте логи сервера на ошибки аутентификации.
+
+### Проблемы с локализацией (mojibake)
+
+- Убедитесь, что файлы переводов сохранены в UTF-8.
+- Проверьте fallback-локаль и наличие ключей.
+
+## Рекомендации по безопасности
+
+- Используйте длинные случайные ключи и периодически ротируйте их.
+- Не публикуйте адреса production-серверов в открытых каналах.
+- Разделяйте тестовый и боевой контуры.
+- Ограничьте SSH-доступ (ключи, firewall, fail2ban).
+- Минимизируйте чувствительные данные в логах.
+
+## Лицензия и ответственность
+
+Перед production-развёртыванием проверьте актуальную лицензию проекта в репозитории.
+Вы несете ответственность за соблюдение законов вашей юрисдикции и внутренних политик вашей организации.

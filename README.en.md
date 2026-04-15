@@ -1,45 +1,72 @@
-# DNSTT Messenger - Full Guide (English)
+# DNSTT Messenger
 
-End-to-end encrypted messenger for restrictive networks.  
-Traffic can be tunneled through DNS with MasterDnsVPN.
+Secure messenger with end-to-end encryption (E2E) and DNS tunnel transport for restrictive or heavily filtered networks.
+
+## Documentation Languages
+
+- English: [README.en.md](./README.en.md)
+- Русский: [README.ru.md](./README.ru.md)
+- 简体中文: [README.zh-CN.md](./README.zh-CN.md)
+- فارسی: [README.fa.md](./README.fa.md)
+- Türkçe: [README.tr.md](./README.tr.md)
+- العربية: [README.ar.md](./README.ar.md)
+- Tiếng Việt: [README.vi.md](./README.vi.md)
 
 ## Contents
 
-- Part A - Server setup (MasterDnsVPN + messenger server)
-- Part B - Client setup (Windows/Electron/Android)
-- Part C - Build from source
-- Troubleshooting and security notes
+- [Project Purpose](#project-purpose)
+- [Key Features](#key-features)
+- [Part A: Server Setup](#part-a-server-setup)
+- [Part B: Client Setup](#part-b-client-setup)
+- [Part C: Build From Source](#part-c-build-from-source)
+- [Troubleshooting](#troubleshooting)
+- [Security Recommendations](#security-recommendations)
+- [License and Responsibility](#license-and-responsibility)
 
----
+## Project Purpose
 
-## Part A - Server Setup
+DNSTT Messenger is designed for cases where standard communication channels are unstable or blocked by DPI and DNS filtering.
+DNS transport helps preserve connectivity where HTTPS/VPN may be limited.
 
-### A1. Prerequisites
+## Key Features
 
-- Linux VPS with public IP
-- Domain you control
-- Basic terminal access
+- End-to-end encrypted messaging between clients.
+- Message transport over DNS tunnel (MasterDnsVPN).
+- Clients for Windows (Go CLI), Electron (desktop), and Android.
+- Multilingual UI support.
+- Optional federation between multiple servers.
+
+## Part A: Server Setup
+
+### A1. Requirements
+
+- Linux VPS with public IP.
+- Domain with DNS zone management access.
+- Basic SSH/terminal access.
 - Open ports:
-  - `53/udp` and `53/tcp` for DNS
-  - `9999/tcp` for messenger server
-  - `9998/tcp` only if federation is enabled
+  - `53/udp` and `53/tcp` for DNS tunnel.
+  - `9999/tcp` for messenger server.
+  - `9998/tcp` only when federation is enabled.
 
-### A2. DNS records for tunnel domain
+### A2. DNS Records for Tunnel
 
 Example:
 
-- Base domain: `example.com`
-- Tunnel zone: `t.example.com`
-- Name server host: `ns1.example.com`
+- base domain: `example.com`
+- tunnel zone: `t.example.com`
+- NS host: `ns1.example.com`
 
-Create DNS records at your registrar/DNS provider:
+Create records:
 
-1. `A` record: `ns1.example.com -> <VPS_IP>`
-2. `NS` record: `t.example.com -> ns1.example.com`
+1. `A`: `ns1.example.com -> <VPS_IP>`
+2. `NS`: `t.example.com -> ns1.example.com`
 
-After propagation, requests to `*.t.example.com` should reach your VPS DNS service.
+Verify:
 
-### A3. Install and run MasterDnsVPN server
+- `dig NS example.com`
+- `dig t.example.com`
+
+### A3. Install MasterDnsVPN Server
 
 ```bash
 wget https://github.com/masterking32/MasterDnsVPN/releases/latest/download/MasterDnsVPN_Server_Linux_AMD64.zip
@@ -60,7 +87,7 @@ Run:
 ./MasterDnsVPN_Server
 ```
 
-Optional systemd service:
+systemd example:
 
 ```ini
 [Unit]
@@ -76,9 +103,9 @@ Restart=always
 WantedBy=multi-user.target
 ```
 
-### A4. Run messenger server
+### A4. Run Messenger Server
 
-Create `config.json` near `server` binary:
+Create `config.json` next to `server` binary:
 
 ```json
 {
@@ -88,15 +115,13 @@ Create `config.json` near `server` binary:
 }
 ```
 
-Start:
+Run:
 
 ```bash
 ./server
 ```
 
-### A5. Optional federation
-
-If you run multiple servers:
+### A5. Federation (Optional)
 
 ```json
 {
@@ -104,33 +129,28 @@ If you run multiple servers:
   "db_path": "./messenger.db",
   "history_limit": 50,
   "s2s_addr": "0.0.0.0:9998",
-  "public_addr": "YOUR_PUBLIC_IP_OR_HOST:9999",
+  "public_addr": "PUBLIC_IP_OR_HOST:9999",
   "gossip_enabled": true,
   "gossip_interval_sec": 60,
   "peers": ["PEER_S2S_ADDR:9998"],
-  "s2s_secret": "shared_secret_on_all_federated_nodes",
+  "s2s_secret": "shared_secret_for_all_nodes",
   "federation_sync_days": 7
 }
 ```
 
-`s2s_secret` must match on all peers.
+`s2s_secret` must be identical on all federation nodes.
 
-### A6. What clients need
+### A6. Data to Share With Users
 
-Share with users:
+- `server_addr` (for messenger, e.g. `1.2.3.4:9999`)
+- `DOMAINS` (tunnel domain)
+- `ENCRYPTION_KEY` (tunnel key)
 
-- `server_addr` (for messenger)
-- tunnel domain (`DOMAINS`)
-- tunnel encryption key (`ENCRYPTION_KEY`)
+## Part B: Client Setup
 
----
+### B1. Configure MasterDnsVPN Client
 
-## Part B - Client Setup
-
-### B1. MasterDnsVPN client
-
-1. Download from releases:  
-   [https://github.com/masterking32/MasterDnsVPN/releases](https://github.com/masterking32/MasterDnsVPN/releases)
+1. Download from [MasterDnsVPN Releases](https://github.com/masterking32/MasterDnsVPN/releases).
 2. Extract archive.
 3. Edit `client_config.toml`:
 
@@ -142,11 +162,11 @@ LISTEN_PORT = 18000
 PROTOCOL_TYPE = "SOCKS5"
 ```
 
-4. Start MasterDnsVPN client and keep it running.
+4. Start MasterDnsVPN and keep it running.
 
-### B2. Messenger config
+### B2. Messenger Config
 
-Set client config:
+Edit `client_config.json`:
 
 ```json
 {
@@ -156,28 +176,33 @@ Set client config:
 }
 ```
 
-### B3. Sign in and settings
+### B3. Start Clients
 
-- Open app settings (available inside session)
-- Set language, server, proxy, and save
-- Register account or sign in
+- Go client (CLI): `client.exe` on Windows or `./client` on Linux/macOS
+- Electron client: launch from `electron-client`
+- Android client: APK from `android-client` or release artifact
 
-### B4. Android note
+### B4. Sign-In and Registration
 
-- Install APK or build from `android-client`
-- Use the same server/proxy/tunnel parameters as desktop clients
+1. Start client.
+2. Enter username and password.
+3. Create account on first run.
+4. Check language/proxy/server settings after login.
 
----
+### B5. Android Note
 
-## Part C - Build From Source
+- Use the same `server_addr`, `DOMAINS`, `ENCRYPTION_KEY` values.
+- Ensure proxy settings match your Android setup.
+
+## Part C: Build From Source
 
 ### C1. Requirements
 
-- Go `1.21+`
-- Node.js `18+` and `npm`
-- Android Studio / Android SDK (for Android client)
+- `Go 1.21+`
+- `Node.js 18+` and `npm`
+- `Android Studio` + `Android SDK` (for Android client)
 
-### C2. Go server/client
+### C2. Build Go Server and Go Client
 
 ```bash
 go build -o server ./server
@@ -192,6 +217,14 @@ GOOS=windows GOARCH=amd64 go build -o server.exe ./server
 GOOS=darwin GOARCH=arm64 go build -o server-mac-arm64 ./server
 ```
 
+PowerShell:
+
+```powershell
+$env:GOOS="linux"; $env:GOARCH="amd64"; go build -o server-linux-amd64 ./server
+$env:GOOS="windows"; $env:GOARCH="amd64"; go build -o server.exe ./server
+Remove-Item Env:GOOS; Remove-Item Env:GOARCH
+```
+
 ### C3. Electron
 
 ```bash
@@ -200,7 +233,7 @@ npm install
 npm start
 ```
 
-Build packages:
+Package builds:
 
 ```bash
 npm run build:win
@@ -221,26 +254,38 @@ Windows:
 gradlew.bat assembleRelease
 ```
 
----
-
 ## Troubleshooting
 
-- Connection refused:
-  - Check `server_addr`
-  - Check firewall rules
-  - Check server process is running
-- Tunnel connected but no chat:
-  - Verify `DOMAINS` and `ENCRYPTION_KEY` match server
-  - Verify SOCKS5 endpoint `127.0.0.1:18000`
-- Login fails:
-  - Confirm username/password
-  - Check server logs for errors
+### Client Cannot Connect
 
----
+- Verify `server_addr`.
+- Check firewall and open ports.
+- Ensure server processes are running.
 
-## Security Notes
+### Tunnel Connected but Chat Fails
 
-- Keep tunnel keys private.
-- Use strong unique passwords.
-- Rotate keys if compromise is suspected.
-- Keep server and dependencies updated.
+- `DOMAINS` and `ENCRYPTION_KEY` must match server values.
+- SOCKS5 endpoint must be `127.0.0.1:18000`.
+
+### Login Failure
+
+- Check username/password.
+- Inspect server logs for authentication errors.
+
+### Localization Issues (Mojibake)
+
+- Ensure translation files are UTF-8.
+- Verify fallback locale and translation keys.
+
+## Security Recommendations
+
+- Use long random keys and rotate them regularly.
+- Do not publish production server addresses publicly.
+- Separate test and production environments.
+- Restrict SSH access (keys, firewall, fail2ban).
+- Minimize sensitive data in logs.
+
+## License and Responsibility
+
+Before production deployment, check the current project license in this repository.
+You are responsible for compliance with your local laws and your organization policies.
