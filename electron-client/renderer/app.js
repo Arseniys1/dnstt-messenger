@@ -246,70 +246,150 @@ const rooms = new Map();
 const dmPartners = new Set();
 
 // ─── DOM ─────────────────────────────────────────────────────────────────────
-const screenConnect = document.getElementById('screen-connect');
-const screenChat    = document.getElementById('screen-chat');
-const statusEl      = document.getElementById('connect-status');
-const onlineListEl  = document.getElementById('online-list');
-const messagesEl    = document.getElementById('messages');
-const msgInput      = document.getElementById('msg-input');
-const myUsernameEl  = document.getElementById('my-username');
-const chatTitle     = document.getElementById('chat-title');
-const chatActions   = document.getElementById('chat-header-actions');
-const dmListEl      = document.getElementById('dm-list');
-const roomListEl    = document.getElementById('room-list-sidebar');
-const navGlobal     = document.getElementById('nav-global');
+let screenConnect, screenChat, statusEl, onlineListEl, messagesEl, msgInput;
+let myUsernameEl, chatTitle, chatActions, dmListEl, roomListEl, navGlobal;
 
-// ─── Connect-screen tabs ─────────────────────────────────────────────────────
-document.querySelectorAll('.tab').forEach(btn => {
-  btn.addEventListener('click', () => {
-    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-    document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
-    btn.classList.add('active');
-    document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
-  });
+// Initialize DOM references after DOM is loaded
+document.addEventListener('DOMContentLoaded', () => {
+  screenConnect = document.getElementById('screen-connect');
+  screenChat    = document.getElementById('screen-chat');
+  statusEl      = document.getElementById('connect-status');
+  onlineListEl  = document.getElementById('online-list');
+  messagesEl    = document.getElementById('messages');
+  msgInput      = document.getElementById('msg-input');
+  myUsernameEl  = document.getElementById('my-username');
+  chatTitle     = document.getElementById('chat-title');
+  chatActions   = document.getElementById('chat-header-actions');
+  dmListEl      = document.getElementById('dm-list');
+  roomListEl    = document.getElementById('room-list-sidebar');
+  navGlobal     = document.getElementById('nav-global');
+  
+  // Initialize event listeners that depend on DOM elements
+  initializeEventListeners();
 });
 
-// ─── Load / save config ──────────────────────────────────────────────────────
-document.addEventListener('DOMContentLoaded', () => {
+// ─── Initialize Event Listeners ──────────────────────────────────────────────
+function initializeEventListeners() {
+  // Connect-screen tabs
+  document.querySelectorAll('.tab').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+      btn.classList.add('active');
+      document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
+    });
+  });
+
+  // Load config
   window.api.getConfig().then(cfg => {
     document.getElementById('cfg-server').value   = cfg.server_addr  || '';
     document.getElementById('cfg-proxy').value    = cfg.proxy_addr   || '';
     document.getElementById('cfg-direct').checked = !!cfg.direct_mode;
-    
-    // Language selector will be populated by the i18n initialization above
-    // No need to set it here as it's handled in populateLanguageSelector
   });
-});
 
-document.getElementById('btn-save-cfg').addEventListener('click', async () => {
-  const cfg = {
-    server_addr: document.getElementById('cfg-server').value.trim(),
-    proxy_addr:  document.getElementById('cfg-proxy').value.trim(),
-    direct_mode: document.getElementById('cfg-direct').checked,
-  };
-  await window.api.saveConfig(cfg);
-  setStatus(t('settings.saved'), 'ok');
-});
+  // Save config
+  document.getElementById('btn-save-cfg').addEventListener('click', async () => {
+    const cfg = {
+      server_addr: document.getElementById('cfg-server').value.trim(),
+      proxy_addr:  document.getElementById('cfg-proxy').value.trim(),
+      direct_mode: document.getElementById('cfg-direct').checked,
+    };
+    await window.api.saveConfig(cfg);
+    setStatus(t('settings.saved'), 'ok');
+  });
 
-// ─── Register ────────────────────────────────────────────────────────────────
-document.getElementById('btn-register').addEventListener('click', async () => {
-  const login = document.getElementById('reg-user').value.trim();
-  const pass  = document.getElementById('reg-pass').value.trim();
-  if (!login || !pass) { setStatus(t('error.fill_all_fields'), 'error'); return; }
-  setStatus(t('status.connecting'));
-  const cfg  = await window.api.getConfig();
-  const conn = await window.api.connect(cfg);
-  if (!conn.ok) { setStatus(t('error.connection_failed', { error: conn.error }), 'error'); return; }
-  const res = await window.api.register(login, pass);
-  await window.api.disconnect();
-  setStatus(res.ok ? t('success.account_created') : t('error.username_taken'), res.ok ? 'ok' : 'error');
-});
+  // Register
+  document.getElementById('btn-register').addEventListener('click', async () => {
+    const login = document.getElementById('reg-user').value.trim();
+    const pass  = document.getElementById('reg-pass').value.trim();
+    if (!login || !pass) { setStatus(t('error.fill_all_fields'), 'error'); return; }
+    setStatus(t('status.connecting'));
+    const cfg  = await window.api.getConfig();
+    const conn = await window.api.connect(cfg);
+    if (!conn.ok) { setStatus(t('error.connection_failed', { error: conn.error }), 'error'); return; }
+    const res = await window.api.register(login, pass);
+    await window.api.disconnect();
+    setStatus(res.ok ? t('success.account_created') : t('error.username_taken'), res.ok ? 'ok' : 'error');
+  });
 
-// ─── Login ───────────────────────────────────────────────────────────────────
-document.getElementById('btn-login').addEventListener('click', doLogin);
-document.getElementById('login-pass').addEventListener('keydown', e => {
-  if (e.key === 'Enter') doLogin();
-});
+  // Login
+  document.getElementById('btn-login').addEventListener('click', doLogin);
+  document.getElementById('login-pass').addEventListener('keydown', e => {
+    if (e.key === 'Enter') doLogin();
+  });
+
+  // Navigation
+  navGlobal.addEventListener('click', () => switchView('global'));
+
+  // Send message
+  document.getElementById('btn-send').addEventListener('click', sendMsg);
+  msgInput.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMsg(); }
+  });
+
+  msgInput.addEventListener('input', () => {
+    msgInput.style.height = 'auto';
+    msgInput.style.height = Math.min(msgInput.scrollHeight, 120) + 'px';
+  });
+
+  // Modal: New DM
+  document.getElementById('btn-new-dm').addEventListener('click', () => {
+    document.getElementById('dm-target-user').value = '';
+    document.getElementById('modal-dm').classList.remove('hidden');
+    document.getElementById('dm-target-user').focus();
+  });
+  document.getElementById('btn-dm-cancel').addEventListener('click', () => {
+    document.getElementById('modal-dm').classList.add('hidden');
+  });
+  document.getElementById('btn-dm-open').addEventListener('click', openDM);
+  document.getElementById('dm-target-user').addEventListener('keydown', e => {
+    if (e.key === 'Enter') openDM();
+  });
+
+  // Modal: Create room
+  document.getElementById('btn-create-room').addEventListener('click', () => {
+    document.getElementById('room-name-input').value = '';
+    document.getElementById('room-desc-input').value = '';
+    document.getElementById('room-public-check').checked = false;
+    document.getElementById('modal-create-room').classList.remove('hidden');
+    document.getElementById('room-name-input').focus();
+  });
+  document.getElementById('btn-create-room-cancel').addEventListener('click', () => {
+    document.getElementById('modal-create-room').classList.add('hidden');
+  });
+  document.getElementById('btn-create-room-ok').addEventListener('click', doCreateRoom);
+  document.getElementById('room-name-input').addEventListener('keydown', e => {
+    if (e.key === 'Enter') doCreateRoom();
+  });
+
+  // Modal: Invite to room
+  document.getElementById('btn-invite-cancel').addEventListener('click', () => {
+    document.getElementById('modal-invite').classList.add('hidden');
+  });
+  document.getElementById('btn-invite-ok').addEventListener('click', doInvite);
+  document.getElementById('invite-username').addEventListener('keydown', e => {
+    if (e.key === 'Enter') doInvite();
+  });
+
+  // Logout
+  document.getElementById('btn-logout').addEventListener('click', async () => {
+    connected = false;
+    await window.api.disconnect();
+    showConnect();
+    setStatus('');
+    onlineListEl.innerHTML = '';
+    dmListEl.innerHTML     = '';
+    roomListEl.innerHTML   = '';
+    msgStore.global = [];
+    msgStore.dm.clear();
+    msgStore.room.clear();
+    rooms.clear();
+    dmPartners.clear();
+    unread.dm.clear();
+    unread.room.clear();
+    currentView = { type: 'global', id: null };
+  });
+}
 
 async function doLogin() {
   const login = document.getElementById('login-user').value.trim();
@@ -470,7 +550,6 @@ function registerListeners() {
 }
 
 // ─── Navigation ───────────────────────────────────────────────────────────────
-navGlobal.addEventListener('click', () => switchView('global'));
 
 function switchView(type, id) {
   currentView = { type, id: id ?? null };
@@ -585,10 +664,6 @@ function renderOnlineList(users) {
 }
 
 // ─── Send message (context-aware) ────────────────────────────────────────────
-document.getElementById('btn-send').addEventListener('click', sendMsg);
-msgInput.addEventListener('keydown', e => {
-  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMsg(); }
-});
 
 function sendMsg() {
   const text = msgInput.value.trim();
@@ -621,24 +696,7 @@ function sendMsg() {
   msgInput.style.height = 'auto';
 }
 
-msgInput.addEventListener('input', () => {
-  msgInput.style.height = 'auto';
-  msgInput.style.height = Math.min(msgInput.scrollHeight, 120) + 'px';
-});
-
 // ─── Modal: New DM ───────────────────────────────────────────────────────────
-document.getElementById('btn-new-dm').addEventListener('click', () => {
-  document.getElementById('dm-target-user').value = '';
-  document.getElementById('modal-dm').classList.remove('hidden');
-  document.getElementById('dm-target-user').focus();
-});
-document.getElementById('btn-dm-cancel').addEventListener('click', () => {
-  document.getElementById('modal-dm').classList.add('hidden');
-});
-document.getElementById('btn-dm-open').addEventListener('click', openDM);
-document.getElementById('dm-target-user').addEventListener('keydown', e => {
-  if (e.key === 'Enter') openDM();
-});
 
 function openDM() {
   const user = document.getElementById('dm-target-user').value.trim();
@@ -652,20 +710,6 @@ function openDM() {
 }
 
 // ─── Modal: Create room ───────────────────────────────────────────────────────
-document.getElementById('btn-create-room').addEventListener('click', () => {
-  document.getElementById('room-name-input').value = '';
-  document.getElementById('room-desc-input').value = '';
-  document.getElementById('room-public-check').checked = false;
-  document.getElementById('modal-create-room').classList.remove('hidden');
-  document.getElementById('room-name-input').focus();
-});
-document.getElementById('btn-create-room-cancel').addEventListener('click', () => {
-  document.getElementById('modal-create-room').classList.add('hidden');
-});
-document.getElementById('btn-create-room-ok').addEventListener('click', doCreateRoom);
-document.getElementById('room-name-input').addEventListener('keydown', e => {
-  if (e.key === 'Enter') doCreateRoom();
-});
 
 async function doCreateRoom() {
   const name  = document.getElementById('room-name-input').value.trim();
@@ -684,13 +728,6 @@ function openInviteModal(roomID) {
   document.getElementById('modal-invite').classList.remove('hidden');
   document.getElementById('invite-username').focus();
 }
-document.getElementById('btn-invite-cancel').addEventListener('click', () => {
-  document.getElementById('modal-invite').classList.add('hidden');
-});
-document.getElementById('btn-invite-ok').addEventListener('click', doInvite);
-document.getElementById('invite-username').addEventListener('keydown', e => {
-  if (e.key === 'Enter') doInvite();
-});
 
 async function doInvite() {
   const user = document.getElementById('invite-username').value.trim();
@@ -699,25 +736,6 @@ async function doInvite() {
   await window.api.inviteToRoom(_inviteRoomID, user);
   _inviteRoomID = null;
 }
-
-// ─── Logout ───────────────────────────────────────────────────────────────────
-document.getElementById('btn-logout').addEventListener('click', async () => {
-  connected = false;
-  await window.api.disconnect();
-  showConnect();
-  setStatus('');
-  onlineListEl.innerHTML = '';
-  dmListEl.innerHTML     = '';
-  roomListEl.innerHTML   = '';
-  msgStore.global = [];
-  msgStore.dm.clear();
-  msgStore.room.clear();
-  rooms.clear();
-  dmPartners.clear();
-  unread.dm.clear();
-  unread.room.clear();
-  currentView = { type: 'global', id: null };
-});
 
 // ─── UI helpers ──────────────────────────────────────────────────────────────
 function showChat() {
