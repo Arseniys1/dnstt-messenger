@@ -1,0 +1,97 @@
+<resources>
+    <!-- App -->
+    <string name="app_name">DNSTT Messenger</string>
+    <string name="app_title">DNSTT Messenger</string>
+    
+    <!-- Login -->
+    <string name="login_title">Giriş</string>
+    <string name="login_tab_login">Giriş</string>
+    <string name="login_tab_register">Kayıt Ol</string>
+    <string name="login_tab_settings">Ayarlar</string>
+    <string name="login_username">Kullanıcı Adı</string>
+    <string name="login_password">Şifre</string>
+    <string name="login_button_login">Giriş Yap</string>
+    <string name="login_button_register">Kayıt Ol</string>
+    
+    <!-- Settings -->
+    <string name="settings_title">Ayarlar</string>
+    <string name="settings_server_address">Sunucu Adresi</string>
+    <string name="settings_proxy_address">SOCKS5 Proxy (dnstt)</string>
+    <string name="settings_direct_mode">Doğrudan bağlantı (proxy olmadan)</string>
+    <string name="settings_button_save">Kaydet</string>
+    <string name="settings_saved">Ayarlar kaydedildi</string>
+    <string name="settings_known_servers">Ağ sunucuları (seçmek için tıklayın)</string>
+    <string name="settings_language">Dil</string>
+    <string name="settings_language_select">Dil Seç</string>
+    
+    <!-- Chat -->
+    <string name="chat_title_global">Genel Sohbet</string>
+    <string name="chat_title_general"># Genel</string>
+    <string name="chat_input_placeholder">Mesaj…</string>
+    <string name="chat_input_placeholder_dm">%1$s\'e mesaj…</string>
+    <string name="chat_input_placeholder_room">Odaya mesaj…</string>
+    <string name="chat_button_send">Gönder</string>
+    <string name="chat_loading_room">Oda yükleniyor…</string>
+    
+    <!-- Sidebar -->
+    <string name="sidebar_section_chats">Sohbetler</string>
+    <string name="sidebar_section_dms">Direkt Mesajlar</string>
+    <string name="sidebar_section_rooms">Odalar</string>
+    <string name="sidebar_section_online">Çevrimiçi (%1$d)</string>
+    <string name="sidebar_button_logout">Çıkış Yap</string>
+    <string name="sidebar_button_menu">Menü</string>
+    
+    <!-- DM -->
+    <string name="dm_title">Direkt Mesajlar</string>
+    <string name="dm_new_conversation">Yeni Direkt Mesaj</string>
+    <string name="dm_target_user">Kullanıcı Adı</string>
+    <string name="dm_button_cancel">İptal</string>
+    <string name="dm_button_open">Aç</string>
+    
+    <!-- Room -->
+    <string name="room_title">Odalar</string>
+    <string name="room_create">Oda Oluştur</string>
+    <string name="room_create_title">Oda Oluştur</string>
+    <string name="room_name">Oda Adı</string>
+    <string name="room_description">Açıklama (isteğe bağlı)</string>
+    <string name="room_public">Herkese açık (herkes görebilir)</string>
+    <string name="room_button_create">Oluştur</string>
+    <string name="room_button_cancel">İptal</string>
+    <string name="room_button_invite">Davet Et</string>
+    <string name="room_invite_title">Odaya Davet Et</string>
+    <string name="room_invite_username">Kullanıcı Adı</string>
+    <string name="room_button_invite_ok">Davet Et</string>
+    <string name="room_members_count">%1$d üye</string>
+    
+    <!-- Status -->
+    <string name="status_connecting">Bağlanıyor…</string>
+    <string name="status_authorizing">Yetkilendiriliyor…</string>
+    <string name="status_connected">Güvenli kanal kuruldu</string>
+    <string name="status_disconnected">Bağlantı kapatıldı</string>
+    
+    <!-- Error -->
+    <string name="error_connection_failed">Bağlantı hatası: %1$s</string>
+    <string name="error_connection_timeout">Bağlantı zaman aşımı</string>
+    <string name="error_invalid_credentials">Geçersiz kullanıcı adı veya şifre</string>
+    <string name="error_login_failed">Giriş hatası: %1$s</string>
+    <string name="error_registration_timeout">Kayıt zaman aşımı</string>
+    <string name="error_username_taken">Kullanıcı adı zaten alınmış</string>
+    <string name="error_fill_all_fields">Lütfen tüm alanları doldurun</string>
+    <string name="error_service_not_ready">Servis hazır değil, lütfen tekrar deneyin</string>
+    
+    <!-- Success -->
+    <string name="success_account_created">Hesap oluşturuldu! Şimdi giriş yapın.</string>
+    
+    <!-- Notification -->
+    <string name="notification_new_message">Yeni mesaj</string>
+    <string name="notification_incoming_messages">Gelen mesajlar</string>
+    <string name="notification_background_connection">Arka plan bağlantısı</string>
+    <string name="notification_background_description">Sunucu bağlantısını sürdürme</string>
+    <string name="notification_messages_channel">Mesajlar</string>
+    <string name="notification_messages_description">Gelen mesajlar</string>
+    
+    <!-- Content Descriptions -->
+    <string name="content_description_menu">Menü</string>
+    <string name="content_description_logout">Çıkış Yap</string>
+    <string name="content_description_send">Gönder</string>
+</resources>

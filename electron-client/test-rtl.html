@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RTL Support Test - DNSTT Messenger</title>
+  <link rel="stylesheet" href="renderer/style.css" />
+  <style>
+    body {
+      padding: 20px;
+      display: block;
+    }
+    .test-section {
+      margin-bottom: 30px;
+      padding: 20px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+    }
+    .test-section h2 {
+      color: var(--accent2);
+      margin-bottom: 15px;
+    }
+    .controls {
+      margin-bottom: 20px;
+      display: flex;
+      gap: 10px;
+    }
+    .info {
+      padding: 10px;
+      background: var(--surface2);
+      border-radius: 8px;
+      margin-bottom: 15px;
+      font-size: 0.9rem;
+    }
+  </style>
+</head>
+<body>
+  <h1 style="color: var(--accent2); margin-bottom: 20px;">RTL Support Test</h1>
+  
+  <div class="controls">
+    <button class="btn-primary" onclick="setDirection('ltr')">Set LTR (English)</button>
+    <button class="btn-primary" onclick="setDirection('rtl')">Set RTL (Arabic/Farsi)</button>
+  </div>
+
+  <div class="info">
+    <strong>Current Direction:</strong> <span id="current-dir">ltr</span><br>
+    <strong>Test Instructions:</strong> Click the buttons above to toggle between LTR and RTL layouts. Observe how the UI elements reposition.
+  </div>
+
+  <div class="test-section">
+    <h2>Test 1: Sidebar Position</h2>
+    <div id="screen-chat" class="screen active" style="height: 400px;">
+      <aside id="sidebar">
+        <div id="sidebar-header">
+          <span id="my-username">TestUser</span>
+          <button id="btn-logout" title="Log Out">⏻</button>
+        </div>
+        <div class="sidebar-section-label">Global Chat</div>
+        <ul id="sidebar-nav">
+          <li class="nav-item active"><span class="nav-icon">#</span> General</li>
+        </ul>
+        <div class="sidebar-section-label">Direct Messages</div>
+        <ul id="dm-list">
+          <li class="dm-item">Alice</li>
+          <li class="dm-item">Bob</li>
+        </ul>
+      </aside>
+      <main id="chat-area">
+        <div id="chat-header">
+          <span id="chat-title">Global Chat</span>
+        </div>
+        <div id="messages">
+          <div class="msg other">
+            <div class="meta">Alice · 10:30</div>
+            Hello! This is a test message from another user.
+          </div>
+          <div class="msg own">
+            <div class="meta">You · 10:31</div>
+            This is my response message.
+          </div>
+          <div class="msg other">
+            <div class="meta">Bob · 10:32</div>
+            مرحبا! هذه رسالة اختبار بالعربية.
+          </div>
+          <div class="msg own">
+            <div class="meta">You · 10:33</div>
+            سلام! این یک پیام تست به فارسی است.
+          </div>
+        </div>
+        <div id="input-bar">
+          <textarea id="msg-input" placeholder="Message..." rows="1"></textarea>
+          <button id="btn-send">➤</button>
+        </div>
+      </main>
+    </div>
+    <div class="info" style="margin-top: 15px;">
+      <strong>Expected Behavior:</strong><br>
+      • LTR: Sidebar on left, messages aligned left (other) and right (own)<br>
+      • RTL: Sidebar on right, messages aligned right (other) and left (own)
+    </div>
+  </div>
+
+  <div class="test-section">
+    <h2>Test 2: Message Bubble Alignment</h2>
+    <div id="messages" style="display: flex; flex-direction: column; gap: 8px; padding: 16px; background: var(--bg); border-radius: 8px;">
+      <div class="msg other">
+        <div class="meta">Alice · 10:30</div>
+        This is a message from another user.
+      </div>
+      <div class="msg own">
+        <div class="meta">You · 10:31</div>
+        This is my message.
+      </div>
+      <div class="msg other">
+        <div class="meta">Bob · 10:32</div>
+        مرحبا! رسالة بالعربية.
+      </div>
+      <div class="msg own">
+        <div class="meta">You · 10:33</div>
+        سلام! پیام فارسی.
+      </div>
+    </div>
+    <div class="info" style="margin-top: 15px;">
+      <strong>Expected Behavior:</strong><br>
+      • LTR: "other" messages on left with bottom-left radius, "own" messages on right with bottom-right radius<br>
+      • RTL: "other" messages on right with bottom-right radius, "own" messages on left with bottom-left radius
+    </div>
+  </div>
+
+  <div class="test-section">
+    <h2>Test 3: Modal Dialog</h2>
+    <div class="modal" style="position: relative; z-index: 1;">
+      <h3>New Direct Message</h3>
+      <input type="text" placeholder="Username" />
+      <div class="modal-actions">
+        <button class="btn-secondary">Cancel</button>
+        <button class="btn-primary">Open</button>
+      </div>
+    </div>
+    <div class="info" style="margin-top: 15px;">
+      <strong>Expected Behavior:</strong><br>
+      • LTR: Action buttons aligned to the right (Cancel, Open)<br>
+      • RTL: Action buttons aligned to the left (Cancel, Open)
+    </div>
+  </div>
+
+  <script>
+    function setDirection(dir) {
+      document.documentElement.setAttribute('dir', dir);
+      document.getElementById('current-dir').textContent = dir;
+      
+      // Update language attribute for demonstration
+      if (dir === 'rtl') {
+        document.documentElement.lang = 'ar';
+      } else {
+        document.documentElement.lang = 'en';
+      }
+    }
+
+    // Initialize
+    document.getElementById('current-dir').textContent = document.documentElement.getAttribute('dir') || 'ltr';
+  </script>
+</body>
+</html>

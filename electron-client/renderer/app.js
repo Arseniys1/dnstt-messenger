@@ -1,5 +1,216 @@
 'use strict';
 
+// ─── I18n Setup ──────────────────────────────────────────────────────────────
+// I18n is exposed via preload.js through window.i18n
+
+// Initialize i18n on load
+(async () => {
+  // Load saved language preference from config
+  const cfg = await window.api.getConfig();
+  await window.i18n.initialize(cfg.language);
+  populateLanguageSelector();
+  updateUILanguage();
+})();
+
+// Helper function to translate
+function t(key, params = {}) {
+  return window.i18n.translate(key, params);
+}
+
+/**
+ * Set text direction based on language
+ * @param {string} languageCode - Language code to determine direction
+ */
+function setTextDirection(languageCode) {
+  const direction = window.i18n.isRTL(languageCode) ? 'rtl' : 'ltr';
+  document.documentElement.setAttribute('dir', direction);
+}
+
+/**
+ * Populate the language selector dropdown with supported languages
+ */
+function populateLanguageSelector() {
+  const languageSelect = document.getElementById('cfg-language');
+  if (!languageSelect) return;
+  
+  const supportedLanguages = window.i18n.getSupportedLanguages();
+  const currentLanguage = window.i18n.getCurrentLanguage();
+  
+  // Clear existing options
+  languageSelect.innerHTML = '';
+  
+  // Add options for each supported language
+  supportedLanguages.forEach(lang => {
+    const option = document.createElement('option');
+    option.value = lang.code;
+    option.textContent = `${lang.nativeName} (${lang.name})`;
+    if (lang.code === currentLanguage) {
+      option.selected = true;
+    }
+    languageSelect.appendChild(option);
+  });
+  
+  // Add change event listener
+  languageSelect.addEventListener('change', handleLanguageChange);
+}
+
+/**
+ * Handle language change from the dropdown
+ */
+async function handleLanguageChange(event) {
+  const newLanguage = event.target.value;
+  
+  // Set the new language
+  await window.i18n.setLanguage(newLanguage);
+  
+  // Update all UI text
+  updateUILanguage();
+  
+  // Save language preference to config
+  const cfg = await window.api.getConfig();
+  cfg.language = newLanguage;
+  await window.api.saveConfig(cfg);
+  
+  // Show confirmation message
+  setStatus(t('settings.saved'), 'ok');
+}
+
+// Update UI elements with translated text
+function updateUILanguage() {
+  // Update document title
+  document.title = t('app.title');
+  
+  // Update HTML lang attribute
+  const currentLang = window.i18n.getCurrentLanguage();
+  document.documentElement.lang = currentLang;
+  
+  // Update text direction for RTL languages
+  setTextDirection(currentLang);
+  
+  // Update static text elements in index.html
+  const logo = document.querySelector('.logo');
+  if (logo) logo.textContent = '🔐 ' + t('app.name');
+  
+  // Update tabs
+  const tabs = document.querySelectorAll('.tab');
+  if (tabs[0]) tabs[0].textContent = t('login.tab_login');
+  if (tabs[1]) tabs[1].textContent = t('login.tab_register');
+  if (tabs[2]) tabs[2].textContent = t('login.tab_settings');
+  
+  // Update login tab
+  const loginUser = document.getElementById('login-user');
+  if (loginUser) loginUser.placeholder = t('login.username');
+  const loginPass = document.getElementById('login-pass');
+  if (loginPass) loginPass.placeholder = t('login.password');
+  const btnLogin = document.getElementById('btn-login');
+  if (btnLogin) btnLogin.textContent = t('login.button_login');
+  
+  // Update register tab
+  const regUser = document.getElementById('reg-user');
+  if (regUser) regUser.placeholder = t('login.username');
+  const regPass = document.getElementById('reg-pass');
+  if (regPass) regPass.placeholder = t('login.password');
+  const btnRegister = document.getElementById('btn-register');
+  if (btnRegister) btnRegister.textContent = t('login.button_register');
+  
+  // Update settings tab
+  const settingsLabels = document.querySelectorAll('#tab-settings label');
+  if (settingsLabels[0]) settingsLabels[0].textContent = t('settings.language');
+  if (settingsLabels[1]) settingsLabels[1].textContent = t('settings.server_address');
+  const cfgServer = document.getElementById('cfg-server');
+  if (cfgServer) cfgServer.placeholder = 'host:port';
+  if (settingsLabels[2]) settingsLabels[2].textContent = t('settings.proxy_address');
+  const cfgProxy = document.getElementById('cfg-proxy');
+  if (cfgProxy) cfgProxy.placeholder = '127.0.0.1:18000';
+  const directLabel = document.querySelector('label.row-label');
+  if (directLabel) {
+    const checkbox = directLabel.querySelector('input');
+    directLabel.textContent = '';
+    directLabel.appendChild(checkbox);
+    directLabel.appendChild(document.createTextNode(' ' + t('settings.direct_mode')));
+  }
+  const btnSaveCfg = document.getElementById('btn-save-cfg');
+  if (btnSaveCfg) btnSaveCfg.textContent = t('settings.button_save');
+  const serverListLabel = document.querySelectorAll('#tab-settings label')[4];
+  if (serverListLabel) serverListLabel.textContent = t('settings.known_servers');
+  const serverListContainer = document.getElementById('server-list-container');
+  if (serverListContainer && serverListContainer.querySelector('small')) {
+    serverListContainer.innerHTML = `<small>${t('settings.known_servers_hint')}</small>`;
+  }
+  
+  // Update chat screen sidebar labels
+  const sidebarLabels = document.querySelectorAll('.sidebar-section-label');
+  if (sidebarLabels[0]) sidebarLabels[0].textContent = t('chat.title_global');
+  if (sidebarLabels[1]) {
+    const dmLabel = sidebarLabels[1];
+    const btnNewDm = dmLabel.querySelector('#btn-new-dm');
+    dmLabel.textContent = t('sidebar.section_dms');
+    if (btnNewDm) dmLabel.appendChild(btnNewDm);
+  }
+  if (sidebarLabels[2]) {
+    const roomLabel = sidebarLabels[2];
+    const btnCreateRoom = roomLabel.querySelector('#btn-create-room');
+    roomLabel.textContent = t('sidebar.section_rooms');
+    if (btnCreateRoom) roomLabel.appendChild(btnCreateRoom);
+  }
+  if (sidebarLabels[3]) sidebarLabels[3].textContent = t('sidebar.section_online');
+  
+  // Update nav items
+  const navGlobalSpan = navGlobal.querySelector('span.nav-icon');
+  if (navGlobalSpan) {
+    navGlobal.textContent = '';
+    navGlobal.appendChild(navGlobalSpan);
+    navGlobal.appendChild(document.createTextNode(' ' + t('chat.title_general').substring(2)));
+  }
+  
+  // Update logout button
+  const btnLogout = document.getElementById('btn-logout');
+  if (btnLogout) btnLogout.title = t('sidebar.button_logout');
+  
+  // Update message input
+  const msgInput = document.getElementById('msg-input');
+  if (msgInput) msgInput.placeholder = t('chat.input_placeholder');
+  
+  // Update modal: New DM
+  const modalDmTitle = document.querySelector('#modal-dm h3');
+  if (modalDmTitle) modalDmTitle.textContent = t('dm.new_conversation');
+  const dmTargetUser = document.getElementById('dm-target-user');
+  if (dmTargetUser) dmTargetUser.placeholder = t('dm.target_user');
+  const btnDmCancel = document.getElementById('btn-dm-cancel');
+  if (btnDmCancel) btnDmCancel.textContent = t('dm.button_cancel');
+  const btnDmOpen = document.getElementById('btn-dm-open');
+  if (btnDmOpen) btnDmOpen.textContent = t('dm.button_open');
+  
+  // Update modal: Create room
+  const modalCreateRoomTitle = document.querySelector('#modal-create-room h3');
+  if (modalCreateRoomTitle) modalCreateRoomTitle.textContent = t('room.create_title');
+  const roomNameInput = document.getElementById('room-name-input');
+  if (roomNameInput) roomNameInput.placeholder = t('room.name');
+  const roomDescInput = document.getElementById('room-desc-input');
+  if (roomDescInput) roomDescInput.placeholder = t('room.description');
+  const roomPublicLabel = document.querySelector('#modal-create-room label.row-label');
+  if (roomPublicLabel) {
+    const checkbox = roomPublicLabel.querySelector('input');
+    roomPublicLabel.textContent = '';
+    roomPublicLabel.appendChild(checkbox);
+    roomPublicLabel.appendChild(document.createTextNode(' ' + t('room.public')));
+  }
+  const btnCreateRoomCancel = document.getElementById('btn-create-room-cancel');
+  if (btnCreateRoomCancel) btnCreateRoomCancel.textContent = t('room.button_cancel');
+  const btnCreateRoomOk = document.getElementById('btn-create-room-ok');
+  if (btnCreateRoomOk) btnCreateRoomOk.textContent = t('room.button_create');
+  
+  // Update modal: Invite to room
+  const modalInviteTitle = document.querySelector('#modal-invite h3');
+  if (modalInviteTitle) modalInviteTitle.textContent = t('room.invite_title');
+  const inviteUsername = document.getElementById('invite-username');
+  if (inviteUsername) inviteUsername.placeholder = t('room.invite_username');
+  const btnInviteCancel = document.getElementById('btn-invite-cancel');
+  if (btnInviteCancel) btnInviteCancel.textContent = t('room.button_cancel');
+  const btnInviteOk = document.getElementById('btn-invite-ok');
+  if (btnInviteOk) btnInviteOk.textContent = t('room.button_invite_ok');
+}
+
 // ─── State ────────────────────────────────────────────────────────────────────
 let myUsername = '';
 let connected  = false;
@@ -55,6 +266,12 @@ window.api.getConfig().then(cfg => {
   document.getElementById('cfg-server').value   = cfg.server_addr  || '';
   document.getElementById('cfg-proxy').value    = cfg.proxy_addr   || '';
   document.getElementById('cfg-direct').checked = !!cfg.direct_mode;
+  
+  // Set language selector value if available
+  const languageSelect = document.getElementById('cfg-language');
+  if (languageSelect && cfg.language) {
+    languageSelect.value = cfg.language;
+  }
 });
 
 document.getElementById('btn-save-cfg').addEventListener('click', async () => {
@@ -64,21 +281,21 @@ document.getElementById('btn-save-cfg').addEventListener('click', async () => {
     direct_mode: document.getElementById('cfg-direct').checked,
   };
   await window.api.saveConfig(cfg);
-  setStatus('Настройки сохранены', 'ok');
+  setStatus(t('settings.saved'), 'ok');
 });
 
 // ─── Register ────────────────────────────────────────────────────────────────
 document.getElementById('btn-register').addEventListener('click', async () => {
   const login = document.getElementById('reg-user').value.trim();
   const pass  = document.getElementById('reg-pass').value.trim();
-  if (!login || !pass) { setStatus('Заполните все поля', 'error'); return; }
-  setStatus('Подключение...');
+  if (!login || !pass) { setStatus(t('error.fill_all_fields'), 'error'); return; }
+  setStatus(t('status.connecting'));
   const cfg  = await window.api.getConfig();
   const conn = await window.api.connect(cfg);
-  if (!conn.ok) { setStatus('Ошибка: ' + conn.error, 'error'); return; }
+  if (!conn.ok) { setStatus(t('error.connection_failed', { error: conn.error }), 'error'); return; }
   const res = await window.api.register(login, pass);
   await window.api.disconnect();
-  setStatus(res.ok ? 'Аккаунт создан! Теперь войдите.' : 'Логин уже занят', res.ok ? 'ok' : 'error');
+  setStatus(res.ok ? t('success.account_created') : t('error.username_taken'), res.ok ? 'ok' : 'error');
 });
 
 // ─── Login ───────────────────────────────────────────────────────────────────
@@ -90,16 +307,16 @@ document.getElementById('login-pass').addEventListener('keydown', e => {
 async function doLogin() {
   const login = document.getElementById('login-user').value.trim();
   const pass  = document.getElementById('login-pass').value.trim();
-  if (!login || !pass) { setStatus('Заполните все поля', 'error'); return; }
-  setStatus('Подключение...');
+  if (!login || !pass) { setStatus(t('error.fill_all_fields'), 'error'); return; }
+  setStatus(t('status.connecting'));
   const cfg  = await window.api.getConfig();
   const conn = await window.api.connect(cfg);
-  if (!conn.ok) { setStatus('Ошибка подключения: ' + conn.error, 'error'); return; }
-  setStatus('Авторизация...');
+  if (!conn.ok) { setStatus(t('error.connection_failed', { error: conn.error }), 'error'); return; }
+  setStatus(t('status.authorizing'));
   registerListeners();
   const res = await window.api.login(login, pass);
   if (!res.ok) {
-    setStatus('Неверный логин или пароль', 'error');
+    setStatus(t('error.invalid_credentials'), 'error');
     await window.api.disconnect();
     return;
   }
@@ -126,7 +343,7 @@ function registerListeners() {
   });
 
   window.api.onHistoryEnd(() => {
-    if (currentView.type === 'global') appendDivider('— конец истории —');
+    if (currentView.type === 'global') appendDivider(t('chat.history_divider'));
     scrollBottom();
   });
 
@@ -148,7 +365,7 @@ function registerListeners() {
     if (connected) {
       connected = false;
       showConnect();
-      setStatus('Соединение разорвано', 'error');
+      setStatus(t('status.connection_lost'), 'error');
     }
   });
 
@@ -192,7 +409,7 @@ function registerListeners() {
   window.api.onRoomCreated(({ id, name, isPublic, owner, inviter }) => {
     if (!rooms.has(id)) rooms.set(id, { name, isPublic, owner, members: new Set() });
     renderRoomList();
-    if (inviter) appendSystemMsg(`Вас пригласил в комнату #${name} пользователь ${inviter}`);
+    if (inviter) appendSystemMsg(t('room.invited_by', { name, inviter }));
   });
 
   window.api.onRoomMembers(({ id, members }) => {
@@ -206,7 +423,7 @@ function registerListeners() {
     if (room) room.members.add(login);
     if (currentView.type === 'room' && currentView.id === id) {
       renderRoomHeader(id);
-      appendSystemMsg(`${login} вошёл в комнату`);
+      appendSystemMsg(t('room.member_joined', { user: login }));
     }
   });
 
@@ -220,7 +437,7 @@ function registerListeners() {
       if (currentView.type === 'room' && currentView.id === id) switchView('global');
     } else if (currentView.type === 'room' && currentView.id === id) {
       renderRoomHeader(id);
-      appendSystemMsg(`${login} покинул комнату`);
+      appendSystemMsg(t('room.member_left', { user: login }));
     }
   });
 
@@ -262,7 +479,7 @@ function switchView(type, id) {
   });
 
   if (type === 'global') {
-    chatTitle.textContent = '# Общий чат';
+    chatTitle.textContent = t('chat.title_global');
     chatActions.innerHTML = '';
     msgStore.global.forEach(m => appendMessage(m.sender, m.text, m.time, m.sender === myUsername));
     unread.global = 0;
@@ -280,14 +497,14 @@ function switchView(type, id) {
     if (room && room.isPublic && !room.members.has(myUsername)) {
       window.api.joinRoom(id);
     }
-    chatTitle.textContent = room ? `# ${room.name}` : `# Комната ${id}`;
+    chatTitle.textContent = room ? `# ${room.name}` : `# ${t('room.title')} ${id}`;
     renderRoomHeader(id);
     (msgStore.room.get(id) || []).forEach(m => appendMessage(m.sender, m.text, m.time, m.sender === myUsername));
     unread.room.delete(id);
     renderRoomList();
   }
 
-  appendDivider('— конец истории —');
+  appendDivider(t('chat.history_divider'));
   scrollBottom();
 }
 
@@ -298,13 +515,13 @@ function renderRoomHeader(roomID) {
 
   const inviteBtn = document.createElement('button');
   inviteBtn.className = 'btn-header-action';
-  inviteBtn.textContent = 'Пригласить';
+  inviteBtn.textContent = t('room.button_invite');
   inviteBtn.addEventListener('click', () => openInviteModal(roomID));
   chatActions.appendChild(inviteBtn);
 
   const leaveBtn = document.createElement('button');
   leaveBtn.className = 'btn-header-action danger';
-  leaveBtn.textContent = 'Покинуть';
+  leaveBtn.textContent = t('room.button_leave');
   leaveBtn.addEventListener('click', async () => {
     await window.api.leaveRoom(roomID);
   });
@@ -502,7 +719,7 @@ function showChat() {
   myUsernameEl.textContent = myUsername;
   messagesEl.innerHTML = '';
   navGlobal.classList.add('active');
-  chatTitle.textContent = '# Общий чат';
+  chatTitle.textContent = t('chat.title_global');
 }
 
 function showConnect() {
@@ -513,7 +730,7 @@ function showConnect() {
 function appendMessage(sender, text, time, own) {
   const div = document.createElement('div');
   div.className = 'msg ' + (own ? 'own' : 'other');
-  div.innerHTML = `<div class="meta">${escHtml(own ? 'Вы' : sender)} · ${escHtml(time)}</div>${escHtml(text)}`;
+  div.innerHTML = `<div class="meta">${escHtml(own ? t('chat.you') : sender)} · ${escHtml(time)}</div>${escHtml(text)}`;
   messagesEl.appendChild(div);
 }
 
@@ -572,14 +789,14 @@ function renderKnownServers(servers) {
   if (!container) return;
   container.innerHTML = '';
   if (!servers || servers.length === 0) {
-    container.innerHTML = '<small>Список пуст</small>';
+    container.innerHTML = `<small>${t('settings.server_list_empty')}</small>`;
     return;
   }
   servers.forEach(addr => {
     const btn = document.createElement('button');
     btn.className   = 'btn-server';
     btn.textContent = addr;
-    btn.title       = 'Подключиться к ' + addr;
+    btn.title       = t('status.connecting') + ' ' + addr;
     btn.addEventListener('click', async () => {
       document.getElementById('cfg-server').value  = addr;
       document.getElementById('cfg-direct').checked = true;
@@ -593,7 +810,7 @@ function renderKnownServers(servers) {
       document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
       document.querySelector('.tab[data-tab="settings"]').classList.add('active');
       document.getElementById('tab-settings').classList.add('active');
-      setStatus('Сервер выбран: ' + addr, 'ok');
+      setStatus(t('settings.server_selected', { server: addr }), 'ok');
     });
     container.appendChild(btn);
   });

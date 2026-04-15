@@ -5,3 +5,4 @@ client/e2e_key.json
 *.db
 /test-federation
 server/messenger.db
+scripts/node_modules

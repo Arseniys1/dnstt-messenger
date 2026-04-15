@@ -95,8 +95,8 @@ class MessengerService : Service() {
     private fun buildServiceNotification() =
         androidx.core.app.NotificationCompat.Builder(this, Notifications.SERVICE_CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_dialog_email)
-            .setContentTitle("DNSTT Messenger")
-            .setContentText("Подключено")
+            .setContentTitle(getString(R.string.app_name))
+            .setContentText(getString(R.string.status_connected))
             .setPriority(androidx.core.app.NotificationCompat.PRIORITY_LOW)
             .setOngoing(true)
             .build()

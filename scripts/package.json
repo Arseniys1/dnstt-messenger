@@ -1,0 +1,9 @@
+{
+  "name": "dnstt-messenger-scripts",
+  "version": "1.0.0",
+  "description": "Utility scripts for DNSTT Messenger",
+  "private": true,
+  "dependencies": {
+    "xml2js": "^0.6.2"
+  }
+}

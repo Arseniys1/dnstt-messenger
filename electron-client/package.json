@@ -7,7 +7,8 @@
     "start": "electron .",
     "build:win": "electron-builder --win",
     "build:linux": "electron-builder --linux",
-    "build:mac": "electron-builder --mac"
+    "build:mac": "electron-builder --mac",
+    "validate-translations": "node ../scripts/validate-translations.js"
   },
   "build": {
     "appId": "com.dnstt.messenger",
@@ -29,7 +30,8 @@
   "dependencies": {
     "@noble/ciphers": "^2.1.1",
     "@noble/curves": "^2.0.1",
-    "socks": "^2.8.3"
+    "socks": "^2.8.3",
+    "xml2js": "^0.6.2"
   },
   "devDependencies": {
     "electron": "^31.0.0",

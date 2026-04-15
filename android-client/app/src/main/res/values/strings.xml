@@ -1,3 +1,97 @@
 <resources>
+    <!-- App -->
     <string name="app_name">DNSTT Messenger</string>
+    <string name="app_title">DNSTT Messenger</string>
+    
+    <!-- Login -->
+    <string name="login_title">Login</string>
+    <string name="login_tab_login">Login</string>
+    <string name="login_tab_register">Register</string>
+    <string name="login_tab_settings">Settings</string>
+    <string name="login_username">Username</string>
+    <string name="login_password">Password</string>
+    <string name="login_button_login">Log In</string>
+    <string name="login_button_register">Register</string>
+    
+    <!-- Settings -->
+    <string name="settings_title">Settings</string>
+    <string name="settings_server_address">Server Address</string>
+    <string name="settings_proxy_address">SOCKS5 Proxy (dnstt)</string>
+    <string name="settings_direct_mode">Direct connection (without proxy)</string>
+    <string name="settings_button_save">Save</string>
+    <string name="settings_saved">Settings saved</string>
+    <string name="settings_known_servers">Network servers (click to select)</string>
+    <string name="settings_language">Language</string>
+    <string name="settings_language_select">Select Language</string>
+    
+    <!-- Chat -->
+    <string name="chat_title_global">Global Chat</string>
+    <string name="chat_title_general"># General</string>
+    <string name="chat_input_placeholder">Message…</string>
+    <string name="chat_input_placeholder_dm">Message to %1$s…</string>
+    <string name="chat_input_placeholder_room">Message to room…</string>
+    <string name="chat_button_send">Send</string>
+    <string name="chat_loading_room">Loading room…</string>
+    
+    <!-- Sidebar -->
+    <string name="sidebar_section_chats">Chats</string>
+    <string name="sidebar_section_dms">Direct Messages</string>
+    <string name="sidebar_section_rooms">Rooms</string>
+    <string name="sidebar_section_online">Online (%1$d)</string>
+    <string name="sidebar_button_logout">Log Out</string>
+    <string name="sidebar_button_menu">Menu</string>
+    
+    <!-- DM -->
+    <string name="dm_title">Direct Messages</string>
+    <string name="dm_new_conversation">New Direct Message</string>
+    <string name="dm_target_user">Username</string>
+    <string name="dm_button_cancel">Cancel</string>
+    <string name="dm_button_open">Open</string>
+    
+    <!-- Room -->
+    <string name="room_title">Rooms</string>
+    <string name="room_create">Create Room</string>
+    <string name="room_create_title">Create Room</string>
+    <string name="room_name">Room Name</string>
+    <string name="room_description">Description (optional)</string>
+    <string name="room_public">Public (visible to all)</string>
+    <string name="room_button_create">Create</string>
+    <string name="room_button_cancel">Cancel</string>
+    <string name="room_button_invite">Invite</string>
+    <string name="room_invite_title">Invite to Room</string>
+    <string name="room_invite_username">Username</string>
+    <string name="room_button_invite_ok">Invite</string>
+    <string name="room_members_count">%1$d members</string>
+    
+    <!-- Status -->
+    <string name="status_connecting">Connecting…</string>
+    <string name="status_authorizing">Authorizing…</string>
+    <string name="status_connected">Secure channel established</string>
+    <string name="status_disconnected">Connection closed</string>
+    
+    <!-- Error -->
+    <string name="error_connection_failed">Connection error: %1$s</string>
+    <string name="error_connection_timeout">Connection timeout</string>
+    <string name="error_invalid_credentials">Invalid username or password</string>
+    <string name="error_login_failed">Login error: %1$s</string>
+    <string name="error_registration_timeout">Registration timeout</string>
+    <string name="error_username_taken">Username already taken</string>
+    <string name="error_fill_all_fields">Please fill in all fields</string>
+    <string name="error_service_not_ready">Service not ready, please try again</string>
+    
+    <!-- Success -->
+    <string name="success_account_created">Account created! Now log in.</string>
+    
+    <!-- Notification -->
+    <string name="notification_new_message">New message</string>
+    <string name="notification_incoming_messages">Incoming messages</string>
+    <string name="notification_background_connection">Background connection</string>
+    <string name="notification_background_description">Maintaining server connection</string>
+    <string name="notification_messages_channel">Messages</string>
+    <string name="notification_messages_description">Incoming messages</string>
+    
+    <!-- Content Descriptions -->
+    <string name="content_description_menu">Menu</string>
+    <string name="content_description_logout">Log Out</string>
+    <string name="content_description_send">Send</string>
 </resources>

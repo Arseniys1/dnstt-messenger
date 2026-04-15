@@ -1,5 +1,9 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
+// Load I18n Manager for renderer
+const I18nManager = require('./i18n/manager.js');
+const i18nInstance = new I18nManager();
+
 contextBridge.exposeInMainWorld('api', {
   getConfig: () => ipcRenderer.invoke('get-config'),
   saveConfig: (cfg) => ipcRenderer.invoke('save-config', cfg),
@@ -41,3 +45,29 @@ contextBridge.exposeInMainWorld('api', {
   onRoomMessage:   (cb) => ipcRenderer.on('room-message',  (_, d) => cb(d)),
   onRoomHistory:   (cb) => ipcRenderer.on('room-history',  (_, d) => cb(d)),
 });
+
+// Expose I18n functionality to renderer
+contextBridge.exposeInMainWorld('i18n', {
+  initialize: async (savedLanguage = null) => {
+    return await i18nInstance.initialize(savedLanguage);
+  },
+  translate: (key, params = {}) => {
+    return i18nInstance.translate(key, params);
+  },
+  setLanguage: async (languageCode) => {
+    return await i18nInstance.setLanguage(languageCode);
+  },
+  getCurrentLanguage: () => {
+    return i18nInstance.getCurrentLanguage();
+  },
+  getSupportedLanguages: () => {
+    return i18nInstance.getSupportedLanguages();
+  },
+  isRTL: (languageCode = null) => {
+    return i18nInstance.isRTL(languageCode);
+  },
+  detectSystemLanguage: () => {
+    return i18nInstance.detectSystemLanguage();
+  }
+});
+

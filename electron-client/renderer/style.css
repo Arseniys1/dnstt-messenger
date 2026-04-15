@@ -77,7 +77,7 @@ body {
 .tab-content { display: none; flex-direction: column; gap: 10px; }
 .tab-content.active { display: flex; }
 
-input[type="text"], input[type="password"], textarea {
+input[type="text"], input[type="password"], textarea, select {
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -88,7 +88,23 @@ input[type="text"], input[type="password"], textarea {
   transition: border-color .2s;
   width: 100%;
 }
-input:focus, textarea:focus { border-color: var(--accent); }
+input:focus, textarea:focus, select:focus { border-color: var(--accent); }
+
+/* Language selector specific styling */
+select.language-selector {
+  cursor: pointer;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%2364748b' d='M6 9L1 4h10z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  padding-right: 36px;
+}
+
+select.language-selector option {
+  background: var(--surface);
+  color: var(--text);
+  padding: 8px;
+}
 
 label { font-size: 0.8rem; color: var(--muted); }
 .row-label { display: flex; align-items: center; gap: 8px; color: var(--text); font-size: 0.9rem; }
@@ -432,3 +448,33 @@ label { font-size: 0.8rem; color: var(--muted); }
 }
 .modal h3 { font-size: 1rem; font-weight: 600; color: var(--text); }
 .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 4px; }
+
+/* ---- RTL Support ---- */
+[dir="rtl"] #sidebar {
+  border-right: none;
+  border-left: 1px solid var(--border);
+}
+
+[dir="rtl"] .msg.own {
+  align-self: flex-start;
+  border-bottom-right-radius: 12px;
+  border-bottom-left-radius: 3px;
+}
+
+[dir="rtl"] .msg.other {
+  align-self: flex-end;
+  border-bottom-left-radius: 12px;
+  border-bottom-right-radius: 3px;
+}
+
+[dir="rtl"] .msg.own .meta {
+  text-align: left;
+}
+
+[dir="rtl"] .msg.other .meta {
+  text-align: right;
+}
+
+[dir="rtl"] .modal-actions {
+  justify-content: flex-start;
+}

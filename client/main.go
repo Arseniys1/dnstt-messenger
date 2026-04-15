@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"net"
@@ -19,6 +20,8 @@ import (
 	"golang.org/x/crypto/chacha20poly1305"
 	"golang.org/x/crypto/hkdf"
 	"golang.org/x/net/proxy"
+	
+	"dnstt-messenger/client/i18n"
 )
 
 type Config struct {
@@ -56,6 +59,9 @@ var (
 	roomsMu    sync.RWMutex
 	rooms      = make(map[uint32]string)   // roomID → name
 	roomMembersMap = make(map[uint32][]string) // roomID → []login
+	
+	// i18n manager
+	i18nMgr *i18n.Manager
 )
 
 const (
@@ -97,85 +103,96 @@ const (
 )
 
 func main() {
+	// Parse command-line flags
+	langFlag := flag.String("lang", "", "Language code (e.g., en, zh, ru)")
+	flag.Parse()
+	
+	// Initialize i18n
+	i18nMgr = i18n.NewManager()
+	detectedLang := i18nMgr.DetectLanguage(*langFlag, "client_config.json")
+	if err := i18nMgr.LoadLanguage(detectedLang); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: Failed to load language %s: %v\n", detectedLang, err)
+	}
+	
 	loadConfig("client_config.json")
 
 	var err error
 	if cfg.DirectMode {
-		fmt.Printf("🌐 Режим: Direct Connect | Подключение к: %s...\n", cfg.ServerAddr)
+		fmt.Printf("🌐 %s\n", i18nMgr.T("status.mode_direct", "server", cfg.ServerAddr))
 		conn, err = net.DialTimeout("tcp", cfg.ServerAddr, 10*time.Second)
 	} else {
-		fmt.Printf("🌐 Режим: DNSTT Proxy (SOCKS5) | Прокси: %s -> Сервер: %s...\n", cfg.ProxyAddr, cfg.ServerAddr)
+		fmt.Printf("🌐 %s\n", i18nMgr.T("status.mode_proxy", "proxy", cfg.ProxyAddr, "server", cfg.ServerAddr))
 		baseDialer := &net.Dialer{Timeout: 10 * time.Second}
 		socks5Dialer, dialErr := proxy.SOCKS5("tcp", cfg.ProxyAddr, nil, baseDialer)
 		if dialErr != nil {
-			fmt.Printf("❌ Ошибка создания SOCKS5 диалера: %v\n", dialErr)
+			fmt.Printf("❌ %s\n", i18nMgr.T("error.socks5_failed", "error", dialErr))
 			return
 		}
 		conn, err = socks5Dialer.Dial("tcp", cfg.ServerAddr)
 	}
 	if err != nil {
-		fmt.Printf("❌ Ошибка подключения: %v\n", err)
+		fmt.Printf("❌ %s\n", i18nMgr.T("error.connection_failed", "error", err))
 		return
 	}
 	defer conn.Close()
 
 	sharedKey, err = ecdhHandshake(conn)
 	if err != nil {
-		fmt.Printf("❌ ECDH хендшейк не удался: %v\n", err)
+		fmt.Printf("❌ %s\n", i18nMgr.T("error.ecdh_failed", "error", err))
 		return
 	}
-	fmt.Println("🔐 Защищённый канал установлен.")
+	fmt.Printf("🔐 %s\n", i18nMgr.T("status.connected"))
 
 	// Load or generate long-term E2E keypair
 	if err := loadOrGenerateE2EKey(); err != nil {
-		fmt.Printf("❌ Ошибка E2E ключа: %v\n", err)
+		fmt.Printf("❌ %s\n", i18nMgr.T("error.e2e_key_failed", "error", err))
 		return
 	}
 
 	reader := bufio.NewReader(os.Stdin)
-	fmt.Println("\n=== DNS Messenger Client ===")
+	fmt.Printf("\n=== %s ===\n", i18nMgr.T("app.name"))
 
 	for {
-		fmt.Println("\n1. Вход\n2. Регистрация")
-		fmt.Print("> ")
+		fmt.Printf("\n%s\n", i18nMgr.T("login.prompt_choice"))
+		fmt.Print(i18nMgr.T("login.prompt_input"))
 		choice, _ := reader.ReadString('\n')
 		choice = strings.TrimSpace(choice)
 
 		if choice != "1" && choice != "2" {
-			fmt.Println("❌ Введите 1 или 2.")
+			fmt.Printf("❌ %s\n", i18nMgr.T("error.invalid_choice"))
 			continue
 		}
 
-		fmt.Print("Логин: ")
+		fmt.Print(i18nMgr.T("login.prompt_username"))
 		login, _ := reader.ReadString('\n')
 		login = strings.TrimSpace(login)
 		if login == "" {
-			fmt.Println("❌ Логин не может быть пустым.")
+			fmt.Printf("❌ %s\n", i18nMgr.T("error.username_empty"))
 			continue
 		}
 
-		fmt.Print("Пароль: ")
+		fmt.Print(i18nMgr.T("login.prompt_password"))
 		pass, _ := reader.ReadString('\n')
 		pass = strings.TrimSpace(pass)
 		if pass == "" {
-			fmt.Println("❌ Пароль не может быть пустым.")
+			fmt.Printf("❌ %s\n", i18nMgr.T("error.password_empty"))
 			continue
 		}
 		if len(login) > 255 || len(pass) > 255 {
-			fmt.Println("❌ Логин и пароль не должны превышать 255 символов.")
+			fmt.Printf("❌ %s\n", i18nMgr.T("error.credentials_too_long"))
 			continue
 		}
 
 		if choice == "2" {
 			ok, regErr := register(login, pass)
 			if regErr != nil {
-				fmt.Println("❌ Ошибка связи:", regErr)
+				fmt.Printf("❌ %s\n", i18nMgr.T("error.communication", "error", regErr))
 				return
 			}
 			if ok {
-				fmt.Println("✨ Аккаунт создан! Теперь войдите.")
+				fmt.Printf("✨ %s\n", i18nMgr.T("success.account_created"))
 			} else {
-				fmt.Println("❌ Логин уже занят.")
+				fmt.Printf("❌ %s\n", i18nMgr.T("error.username_taken"))
 			}
 			continue
 		}
@@ -186,7 +203,7 @@ func main() {
 		go readLoop(loginDone, historyDone)
 
 		if ok := <-loginDone; !ok {
-			fmt.Println("❌ Неверный логин или пароль.")
+			fmt.Printf("❌ %s\n", i18nMgr.T("error.invalid_credentials"))
 			return
 		}
 
@@ -195,21 +212,30 @@ func main() {
 		// Upload our E2E public key to the server
 		sendSetPublicKey()
 
-		fmt.Println("\n--- История чата ---")
+		fmt.Printf("\n%s\n", i18nMgr.T("status.history_header"))
 		<-historyDone
-		fmt.Println("--- Конец истории ---")
+		fmt.Printf("%s\n", i18nMgr.T("status.history_end"))
 		fmt.Println()
 		break
 	}
 
-	fmt.Println("✅ Авторизация успешна! (/exit — выход, /servers — серверы, /dm <user> <text> — личное сообщение,")
-	fmt.Println("   /rooms — список комнат, /join <id> — войти в комнату, /leave <id> — покинуть,")
-	fmt.Println("   /create <name> [pub] — создать комнату, /room <id> <text> — сообщение в комнату,")
-	fmt.Println("   /invite <roomID> <user> — пригласить)")
+	fmt.Printf("✅ %s (%s, %s, %s,\n", 
+		i18nMgr.T("status.login_success"),
+		i18nMgr.T("command.help_exit"),
+		i18nMgr.T("command.help_servers"),
+		i18nMgr.T("command.help_dm"))
+	fmt.Printf("   %s, %s, %s,\n",
+		i18nMgr.T("command.help_rooms"),
+		i18nMgr.T("command.help_join"),
+		i18nMgr.T("command.help_leave"))
+	fmt.Printf("   %s, %s,\n",
+		i18nMgr.T("command.help_create"),
+		i18nMgr.T("command.help_room_message"))
+	fmt.Printf("   %s)\n", i18nMgr.T("command.help_invite"))
 
 	reader2 := bufio.NewReader(os.Stdin)
 	for {
-		fmt.Print(">> ")
+		fmt.Print(i18nMgr.T("misc.prompt"))
 		text, _ := reader2.ReadString('\n')
 		text = strings.TrimSpace(text)
 		if text == "/exit" {
@@ -220,9 +246,9 @@ func main() {
 			servers := knownServers
 			knownServersMu.RUnlock()
 			if len(servers) == 0 {
-				fmt.Println("📡 Список серверов пуст.")
+				fmt.Printf("📡 %s\n", i18nMgr.T("server.list_empty"))
 			} else {
-				fmt.Printf("📡 Известные серверы (%d):\n", len(servers))
+				fmt.Printf("📡 %s\n", i18nMgr.T("server.list_title", "count", len(servers)))
 				for i, s := range servers {
 					fmt.Printf("  %d. %s\n", i+1, s)
 				}
@@ -232,9 +258,9 @@ func main() {
 		if text == "/rooms" {
 			roomsMu.RLock()
 			if len(rooms) == 0 {
-				fmt.Println("🏠 Нет доступных комнат.")
+				fmt.Printf("🏠 %s\n", i18nMgr.T("room.list_empty"))
 			} else {
-				fmt.Printf("🏠 Комнаты (%d):\n", len(rooms))
+				fmt.Printf("🏠 %s\n", i18nMgr.T("room.list_title", "count", len(rooms)))
 				for id, name := range rooms {
 					fmt.Printf("  [%d] %s\n", id, name)
 				}
@@ -246,7 +272,7 @@ func main() {
 		if strings.HasPrefix(text, "/dm ") {
 			parts := strings.SplitN(text[4:], " ", 2)
 			if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
-				fmt.Println("Использование: /dm <user> <text>")
+				fmt.Println(i18nMgr.T("command.usage_dm"))
 				continue
 			}
 			sendDM(parts[0], parts[1])
@@ -257,7 +283,7 @@ func main() {
 			idStr := strings.TrimSpace(text[6:])
 			var id uint32
 			if _, err := fmt.Sscanf(idStr, "%d", &id); err != nil {
-				fmt.Println("Использование: /join <roomID>")
+				fmt.Println(i18nMgr.T("command.usage_join"))
 				continue
 			}
 			sendJoinRoom(id)
@@ -268,7 +294,7 @@ func main() {
 			idStr := strings.TrimSpace(text[7:])
 			var id uint32
 			if _, err := fmt.Sscanf(idStr, "%d", &id); err != nil {
-				fmt.Println("Использование: /leave <roomID>")
+				fmt.Println(i18nMgr.T("command.usage_leave"))
 				continue
 			}
 			sendLeaveRoom(id)
@@ -278,7 +304,7 @@ func main() {
 		if strings.HasPrefix(text, "/create ") {
 			args := strings.Fields(text[8:])
 			if len(args) == 0 {
-				fmt.Println("Использование: /create <name> [pub]")
+				fmt.Println(i18nMgr.T("command.usage_create"))
 				continue
 			}
 			name := args[0]
@@ -290,12 +316,12 @@ func main() {
 		if strings.HasPrefix(text, "/room ") {
 			parts := strings.SplitN(text[6:], " ", 2)
 			if len(parts) < 2 {
-				fmt.Println("Использование: /room <roomID> <text>")
+				fmt.Println(i18nMgr.T("command.usage_room"))
 				continue
 			}
 			var id uint32
 			if _, err := fmt.Sscanf(parts[0], "%d", &id); err != nil {
-				fmt.Println("Использование: /room <roomID> <text>")
+				fmt.Println(i18nMgr.T("command.usage_room"))
 				continue
 			}
 			sendRoomMessage(id, parts[1])
@@ -305,12 +331,12 @@ func main() {
 		if strings.HasPrefix(text, "/invite ") {
 			parts := strings.Fields(text[8:])
 			if len(parts) < 2 {
-				fmt.Println("Использование: /invite <roomID> <user>")
+				fmt.Println(i18nMgr.T("command.usage_invite"))
 				continue
 			}
 			var id uint32
 			if _, err := fmt.Sscanf(parts[0], "%d", &id); err != nil {
-				fmt.Println("Использование: /invite <roomID> <user>")
+				fmt.Println(i18nMgr.T("command.usage_invite"))
 				continue
 			}
 			sendRoomInvite(id, parts[1])
@@ -341,7 +367,7 @@ func readOneFrame(c net.Conn) ([]byte, error) {
 	}
 	frameLen := int(binary.LittleEndian.Uint16(lenBuf))
 	if frameLen < 1 {
-		return nil, fmt.Errorf("пустой фрейм")
+		return nil, fmt.Errorf("empty frame")
 	}
 	frame := make([]byte, frameLen)
 	if _, err := readFull(c, frame); err != nil {
@@ -354,22 +380,22 @@ func ecdhHandshake(c net.Conn) ([]byte, error) {
 	curve := ecdh.X25519()
 	privKey, err := curve.GenerateKey(rand.Reader)
 	if err != nil {
-		return nil, fmt.Errorf("генерация ключа: %w", err)
+		return nil, fmt.Errorf("key generation: %w", err)
 	}
 	serverPubBytes := make([]byte, 32)
 	if _, err = readFull(c, serverPubBytes); err != nil {
-		return nil, fmt.Errorf("чтение публичного ключа сервера: %w", err)
+		return nil, fmt.Errorf("reading server public key: %w", err)
 	}
 	serverPub, err := curve.NewPublicKey(serverPubBytes)
 	if err != nil {
-		return nil, fmt.Errorf("парсинг публичного ключа сервера: %w", err)
+		return nil, fmt.Errorf("parsing server public key: %w", err)
 	}
 	if _, err = c.Write(privKey.PublicKey().Bytes()); err != nil {
-		return nil, fmt.Errorf("отправка публичного ключа: %w", err)
+		return nil, fmt.Errorf("sending public key: %w", err)
 	}
 	shared, err := privKey.ECDH(serverPub)
 	if err != nil {
-		return nil, fmt.Errorf("вычисление общего секрета: %w", err)
+		return nil, fmt.Errorf("computing shared secret: %w", err)
 	}
 	return shared, nil
 }
@@ -388,7 +414,7 @@ func readFull(c net.Conn, buf []byte) (int, error) {
 
 func register(login, pass string) (bool, error) {
 	if len(login) > 255 || len(pass) > 255 {
-		return false, fmt.Errorf("слишком длинные данные")
+		return false, fmt.Errorf("data too long")
 	}
 	payload := []byte{byte(len(login))}
 	payload = append(payload, []byte(login)...)
@@ -402,7 +428,7 @@ func register(login, pass string) (bool, error) {
 		return false, err
 	}
 	if len(frame) < 1 {
-		return false, fmt.Errorf("пустой ответ")
+		return false, fmt.Errorf("empty response")
 	}
 	return frame[0] == 0x01, nil
 }
@@ -432,7 +458,7 @@ func sendPublicKeyRequest(username string) {
 // sendE2EMessage encrypts text for all online users and sends via CmdE2EMsg fragments.
 func sendE2EMessage(text string) {
 	if e2ePrivKey == nil {
-		fmt.Println("❌ E2E ключ не инициализирован")
+		fmt.Printf("❌ %s\n", i18nMgr.T("error.e2e_not_initialized"))
 		return
 	}
 
@@ -477,7 +503,7 @@ func sendE2EMessage(text string) {
 		for _, name := range missing {
 			sendPublicKeyRequest(name)
 		}
-		fmt.Printf("⏳ Ожидаем ключи (%s)...\n>> ", strings.Join(missing, ", "))
+		fmt.Printf("⏳ %s\n%s", i18nMgr.T("server.waiting_for_keys", "users", strings.Join(missing, ", ")), i18nMgr.T("misc.prompt"))
 		return
 	}
 
@@ -488,21 +514,21 @@ func doSendE2EMessage(text string, recipients map[string][]byte) {
 	// 1. Random message key
 	msgKey := make([]byte, 32)
 	if _, err := rand.Read(msgKey); err != nil {
-		fmt.Println("❌ Ошибка генерации msgKey:", err)
+		fmt.Printf("❌ %s\n", i18nMgr.T("error.e2e_key_failed", "error", err))
 		return
 	}
 
 	// 2. Random nonce for content
 	nonce := make([]byte, 12)
 	if _, err := rand.Read(nonce); err != nil {
-		fmt.Println("❌ Ошибка генерации nonce:", err)
+		fmt.Printf("❌ %s\n", i18nMgr.T("error.e2e_key_failed", "error", err))
 		return
 	}
 
 	// 3. Encrypt content
 	aead, err := chacha20poly1305.New(msgKey)
 	if err != nil {
-		fmt.Println("❌ Ошибка AEAD:", err)
+		fmt.Printf("❌ %s\n", i18nMgr.T("error.e2e_key_failed", "error", err))
 		return
 	}
 	encContent := aead.Seal(nil, nonce, []byte(text), nil)
@@ -516,7 +542,7 @@ func doSendE2EMessage(text string, recipients map[string][]byte) {
 	for login, pubkey := range recipients {
 		env, err := sealEnvelope(pubkey, msgKey)
 		if err != nil {
-			fmt.Printf("⚠️ Не удалось создать envelope для %s: %v\n", login, err)
+			fmt.Printf("⚠️ Failed to create envelope for %s: %v\n", login, err)
 			continue
 		}
 		envelopes = append(envelopes, envEntry{login: login, env: env})
@@ -570,7 +596,7 @@ func sendFragmented(cmd byte, payload []byte) {
 	}
 
 	if len(chunks) > 255 {
-		fmt.Println("❌ Сообщение слишком большое для фрагментации")
+		fmt.Printf("❌ %s\n", i18nMgr.T("error.message_too_large"))
 		return
 	}
 
@@ -641,7 +667,7 @@ func readLoop(loginDone chan bool, historyDone chan struct{}) {
 	for {
 		n, err := conn.Read(tmp)
 		if err != nil {
-			fmt.Println("\n📡 Соединение закрыто сервером.")
+			fmt.Printf("\n📡 %s\n", i18nMgr.T("status.disconnected"))
 			os.Exit(0)
 		}
 		pending = append(pending, tmp[:n]...)
@@ -738,7 +764,7 @@ func readLoop(loginDone chan bool, historyDone chan struct{}) {
 							sendPublicKeyRequest(name)
 						}
 					}
-					fmt.Printf("\n🟢 Онлайн (%d): %s\n>> ", len(names), strings.Join(names, ", "))
+					fmt.Printf("\n🟢 %s\n%s", i18nMgr.T("misc.online_users", "count", len(names), "users", strings.Join(names, ", ")), i18nMgr.T("misc.prompt"))
 				}
 
 			case CmdOnlineAdd:
@@ -765,7 +791,7 @@ func readLoop(loginDone chan bool, historyDone chan struct{}) {
 				if !have {
 					sendPublicKeyRequest(name)
 				}
-				fmt.Printf("\n🟢 Онлайн (%d): %s\n>> ", len(allNames), strings.Join(allNames, ", "))
+				fmt.Printf("\n🟢 %s\n%s", i18nMgr.T("misc.online_users", "count", len(allNames), "users", strings.Join(allNames, ", ")), i18nMgr.T("misc.prompt"))
 
 			case CmdOnlineRemove:
 				if len(payload) < 2 {
@@ -779,7 +805,7 @@ func readLoop(loginDone chan bool, historyDone chan struct{}) {
 					allNames = append(allNames, n)
 				}
 				sidNamesMu.Unlock()
-				fmt.Printf("\n🟢 Онлайн (%d): %s\n>> ", len(allNames), strings.Join(allNames, ", "))
+				fmt.Printf("\n🟢 %s\n%s", i18nMgr.T("misc.online_users", "count", len(allNames), "users", strings.Join(allNames, ", ")), i18nMgr.T("misc.prompt"))
 
 			case CmdServerList:
 				if len(payload) < 1 {
@@ -804,7 +830,7 @@ func readLoop(loginDone chan bool, historyDone chan struct{}) {
 				knownServers = servers
 				knownServersMu.Unlock()
 				if len(servers) > 0 {
-					fmt.Printf("\n📡 Серверы сети (%d): %s\n>> ", len(servers), strings.Join(servers, ", "))
+					fmt.Printf("\n📡 %s\n%s", i18nMgr.T("server.network_servers", "count", len(servers), "servers", strings.Join(servers, ", ")), i18nMgr.T("misc.prompt"))
 				}
 
 			case CmdDMIncoming:
@@ -875,7 +901,7 @@ func handleE2EIncoming(payload []byte) {
 		senderName = "unknown"
 	}
 	now := time.Now().Local().Format("15:04")
-	fmt.Printf("\n📨 [%s] [%s]: %s\n>> ", now, senderName, string(plain))
+	fmt.Printf("\n📨 %s\n%s", i18nMgr.T("misc.message_received", "time", now, "sender", senderName, "text", string(plain)), i18nMgr.T("misc.prompt"))
 }
 
 // handleE2EHistory decrypts and displays a history message.
@@ -915,7 +941,7 @@ func handleE2EHistory(payload []byte) {
 	}
 
 	timeStr := time.Unix(int64(ts), 0).Local().Format("2006-01-02 15:04")
-	fmt.Printf("  [%s] %s: %s\n", timeStr, sender, string(plain))
+	fmt.Printf("  %s\n", i18nMgr.T("misc.message_history", "time", timeStr, "sender", sender, "text", string(plain)))
 }
 
 // handlePublicKeyResponse stores a received pubkey and flushes pending messages.
@@ -1039,7 +1065,7 @@ func loadOrGenerateE2EKey() error {
 			if err == nil {
 				e2ePrivKey = priv
 				e2ePubKey = priv.PublicKey()
-				fmt.Println("🔑 E2E ключ загружен из e2e_key.json")
+				fmt.Printf("🔑 %s\n", i18nMgr.T("misc.e2e_key_loaded"))
 				return nil
 			}
 		}
@@ -1060,7 +1086,7 @@ func loadOrGenerateE2EKey() error {
 	}
 	keyData, _ := json.Marshal(kf)
 	os.WriteFile(keyPath, keyData, 0600) //nolint:errcheck
-	fmt.Println("🔑 Новый E2E ключ сгенерирован и сохранён в e2e_key.json")
+	fmt.Printf("🔑 %s\n", i18nMgr.T("misc.e2e_key_generated"))
 	return nil
 }
 
@@ -1076,7 +1102,7 @@ func loadConfig(path string) {
 		defer file.Close()
 		json.NewDecoder(file).Decode(&cfg) //nolint:errcheck
 	} else {
-		fmt.Println("⚠️ Конфиг не найден, использую настройки по умолчанию.")
+		fmt.Printf("⚠️ %s\n", i18nMgr.T("server.config_not_found"))
 	}
 }
 
@@ -1085,14 +1111,14 @@ func loadConfig(path string) {
 // sendDM encrypts and sends a direct message to recipientLogin.
 func sendDM(recipientLogin, text string) {
 	if e2ePrivKey == nil {
-		fmt.Println("❌ E2E ключ не инициализирован")
+		fmt.Printf("❌ %s\n", i18nMgr.T("error.e2e_not_initialized"))
 		return
 	}
 	pubkeyMu.RLock()
 	recipPub, ok := knownPubkeys[recipientLogin]
 	pubkeyMu.RUnlock()
 	if !ok {
-		fmt.Printf("⏳ Ключ %s не известен, запрашиваем...\n>> ", recipientLogin)
+		fmt.Printf("⏳ %s\n%s", i18nMgr.T("server.waiting_for_keys", "users", recipientLogin), i18nMgr.T("misc.prompt"))
 		sendPublicKeyRequest(recipientLogin)
 		return
 	}
@@ -1100,17 +1126,17 @@ func sendDM(recipientLogin, text string) {
 	msgKey := make([]byte, 32)
 	nonce := make([]byte, 12)
 	if _, err := rand.Read(msgKey); err != nil {
-		fmt.Println("❌ Ошибка генерации msgKey:", err)
+		fmt.Printf("❌ %s\n", i18nMgr.T("error.e2e_key_failed", "error", err))
 		return
 	}
 	if _, err := rand.Read(nonce); err != nil {
-		fmt.Println("❌ Ошибка генерации nonce:", err)
+		fmt.Printf("❌ %s\n", i18nMgr.T("error.e2e_key_failed", "error", err))
 		return
 	}
 
 	aead, err := chacha20poly1305.New(msgKey)
 	if err != nil {
-		fmt.Println("❌ Ошибка AEAD:", err)
+		fmt.Printf("❌ %s\n", i18nMgr.T("error.e2e_key_failed", "error", err))
 		return
 	}
 	encContent := aead.Seal(nil, nonce, []byte(text), nil)
@@ -1155,7 +1181,7 @@ func sendDM(recipientLogin, text string) {
 		assembled = append(assembled, e.env...)
 	}
 	sendFragmented(CmdDM, assembled)
-	fmt.Printf("💬 [DM → %s]: %s\n>> ", recipientLogin, text)
+	fmt.Printf("💬 %s\n%s", i18nMgr.T("dm.sent_to", "user", recipientLogin, "text", text), i18nMgr.T("misc.prompt"))
 }
 
 // handleDMIncoming: [SenderLen(1)][Sender(N)][MsgID(4LE)][storedBlob][Envelope(80)]
@@ -1183,7 +1209,7 @@ func handleDMIncoming(payload []byte) {
 		return
 	}
 	now := time.Now().Local().Format("15:04")
-	fmt.Printf("\n💬 [DM от %s] [%s]: %s\n>> ", sender, now, string(plain))
+	fmt.Printf("\n💬 [DM from %s] [%s]: %s\n%s", sender, now, string(plain), i18nMgr.T("misc.prompt"))
 }
 
 // handleDMHistory: [SenderLen(1)][Sender(N)][RecipLen(1)][Recip(N)][Timestamp(4BE)][MsgID(4LE)][storedBlob][Envelope(80)]
@@ -1273,7 +1299,7 @@ func sendRoomInvite(roomID uint32, username string) {
 // sendRoomMessage encrypts text for all known room members and sends via CmdRoomMsg.
 func sendRoomMessage(roomID uint32, text string) {
 	if e2ePrivKey == nil {
-		fmt.Println("❌ E2E ключ не инициализирован")
+		fmt.Printf("❌ %s\n", i18nMgr.T("error.e2e_not_initialized"))
 		return
 	}
 
@@ -1282,7 +1308,7 @@ func sendRoomMessage(roomID uint32, text string) {
 	members := roomMembersMap[roomID]
 	roomsMu.RUnlock()
 	if len(members) == 0 {
-		fmt.Println("⚠️ Список участников комнаты ещё не получен, попробуйте по��же")
+		fmt.Printf("⚠️ %s\n", i18nMgr.T("error.service_not_ready"))
 		return
 	}
 	pubkeyMu.RLock()
@@ -1305,24 +1331,24 @@ func sendRoomMessage(roomID uint32, text string) {
 	pubkeyMu.RUnlock()
 
 	if len(recipients) == 0 {
-		fmt.Println("⚠️ Нет получателей с известными ключами")
+		fmt.Printf("⚠️ %s\n", i18nMgr.T("error.service_not_ready"))
 		return
 	}
 
 	msgKey := make([]byte, 32)
 	nonce := make([]byte, 12)
 	if _, err := rand.Read(msgKey); err != nil {
-		fmt.Println("❌ Ошибка генерации msgKey:", err)
+		fmt.Printf("❌ %s\n", i18nMgr.T("error.e2e_key_failed", "error", err))
 		return
 	}
 	if _, err := rand.Read(nonce); err != nil {
-		fmt.Println("❌ Ошибка генерации nonce:", err)
+		fmt.Printf("❌ %s\n", i18nMgr.T("error.e2e_key_failed", "error", err))
 		return
 	}
 
 	aead, err := chacha20poly1305.New(msgKey)
 	if err != nil {
-		fmt.Println("❌ Ошибка AEAD:", err)
+		fmt.Printf("❌ %s\n", i18nMgr.T("error.e2e_key_failed", "error", err))
 		return
 	}
 	encContent := aead.Seal(nil, nonce, []byte(text), nil)
@@ -1393,7 +1419,7 @@ func handleRoomList(payload []byte) {
 		off += 2
 		rooms[id] = name
 		_ = isPublic
-		fmt.Printf("\n🏠 Комната [%d] %s (владелец: %s, участников: %d)\n>> ", id, name, owner, memberCount)
+		fmt.Printf("\n🏠 Room [%d] %s (owner: %s, members: %d)\n%s", id, name, owner, memberCount, i18nMgr.T("misc.prompt"))
 	}
 	roomsMu.Unlock()
 }
@@ -1409,10 +1435,11 @@ func handleRoomCreated(payload []byte) {
 		return
 	}
 	name := string(payload[5 : 5+nLen])
+	isPublic := payload[5+nLen] == 1
 	roomsMu.Lock()
 	rooms[id] = name
 	roomsMu.Unlock()
-	fmt.Printf("\n🏠 Комната создана/доступна: [%d] %s\n>> ", id, name)
+	fmt.Printf("\n🏠 %s\n%s", i18nMgr.T("room.created", "name", name, "id", id, "public", isPublic), i18nMgr.T("misc.prompt"))
 }
 
 // handleRoomMembers: [RoomID(4LE)][MemberCount(2LE)] per: [LoginLen(1)][Login(N)][IsAdmin(1)]
@@ -1448,7 +1475,7 @@ func handleRoomMembers(payload []byte) {
 		}
 	}
 	pubkeyMu.RUnlock()
-	fmt.Printf("\n👥 Участники комнаты [%d] %s: %s\n>> ", id, name, strings.Join(members, ", "))
+	fmt.Printf("\n👥 Room [%d] %s members: %s\n%s", id, name, strings.Join(members, ", "), i18nMgr.T("misc.prompt"))
 }
 
 // handleRoomMemberAdd: [RoomID(4LE)][LoginLen(1)][Login(N)]
@@ -1474,7 +1501,7 @@ func handleRoomMemberAdd(payload []byte) {
 	if !found {
 		roomMembersMap[id] = append(existing, login)
 	}
-	name := rooms[id]
+	_ = rooms[id] // name variable not used in i18n version
 	roomsMu.Unlock()
 	pubkeyMu.RLock()
 	_, have := knownPubkeys[login]
@@ -1482,7 +1509,7 @@ func handleRoomMemberAdd(payload []byte) {
 	if !have {
 		sendPublicKeyRequest(login)
 	}
-	fmt.Printf("\n➕ %s вошёл в комнату [%d] %s\n>> ", login, id, name)
+	fmt.Printf("\n➕ %s\n%s", i18nMgr.T("room.member_joined", "user", login), i18nMgr.T("misc.prompt"))
 }
 
 // handleRoomMemberRem: [RoomID(4LE)][LoginLen(1)][Login(N)]
@@ -1510,9 +1537,9 @@ func handleRoomMemberRem(payload []byte) {
 	} else {
 		roomMembersMap[id] = filtered
 	}
-	name := rooms[id]
+	_ = rooms[id] // name variable not used in i18n version
 	roomsMu.Unlock()
-	fmt.Printf("\n➖ %s покинул комнату [%d] %s\n>> ", login, id, name)
+	fmt.Printf("\n➖ %s\n%s", i18nMgr.T("room.member_left", "user", login), i18nMgr.T("misc.prompt"))
 }
 
 // handleRoomMsgIncoming: [RoomID(4LE)][SenderLen(1)][Sender(N)][MsgID(4LE)][storedBlob][Envelope(80)]

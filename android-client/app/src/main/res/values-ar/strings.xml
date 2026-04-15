@@ -1,0 +1,97 @@
+<resources>
+    <!-- App -->
+    <string name="app_name">مراسل DNSTT</string>
+    <string name="app_title">مراسل DNSTT</string>
+    
+    <!-- Login -->
+    <string name="login_title">تسجيل الدخول</string>
+    <string name="login_tab_login">تسجيل الدخول</string>
+    <string name="login_tab_register">التسجيل</string>
+    <string name="login_tab_settings">الإعدادات</string>
+    <string name="login_username">اسم المستخدم</string>
+    <string name="login_password">كلمة المرور</string>
+    <string name="login_button_login">تسجيل الدخول</string>
+    <string name="login_button_register">التسجيل</string>
+    
+    <!-- Settings -->
+    <string name="settings_title">الإعدادات</string>
+    <string name="settings_server_address">عنوان الخادم</string>
+    <string name="settings_proxy_address">بروكسي SOCKS5 (dnstt)</string>
+    <string name="settings_direct_mode">اتصال مباشر (بدون بروكسي)</string>
+    <string name="settings_button_save">حفظ</string>
+    <string name="settings_saved">تم حفظ الإعدادات</string>
+    <string name="settings_known_servers">خوادم الشبكة (انقر للاختيار)</string>
+    <string name="settings_language">اللغة</string>
+    <string name="settings_language_select">اختر اللغة</string>
+    
+    <!-- Chat -->
+    <string name="chat_title_global">الدردشة العامة</string>
+    <string name="chat_title_general"># عام</string>
+    <string name="chat_input_placeholder">رسالة…</string>
+    <string name="chat_input_placeholder_dm">رسالة إلى %1$s…</string>
+    <string name="chat_input_placeholder_room">رسالة إلى الغرفة…</string>
+    <string name="chat_button_send">إرسال</string>
+    <string name="chat_loading_room">جارٍ تحميل الغرفة…</string>
+    
+    <!-- Sidebar -->
+    <string name="sidebar_section_chats">الدردشات</string>
+    <string name="sidebar_section_dms">الرسائل المباشرة</string>
+    <string name="sidebar_section_rooms">الغرف</string>
+    <string name="sidebar_section_online">متصل (%1$d)</string>
+    <string name="sidebar_button_logout">تسجيل الخروج</string>
+    <string name="sidebar_button_menu">القائمة</string>
+    
+    <!-- DM -->
+    <string name="dm_title">الرسائل المباشرة</string>
+    <string name="dm_new_conversation">رسالة مباشرة جديدة</string>
+    <string name="dm_target_user">اسم المستخدم</string>
+    <string name="dm_button_cancel">إلغاء</string>
+    <string name="dm_button_open">فتح</string>
+    
+    <!-- Room -->
+    <string name="room_title">الغرف</string>
+    <string name="room_create">إنشاء غرفة</string>
+    <string name="room_create_title">إنشاء غرفة</string>
+    <string name="room_name">اسم الغرفة</string>
+    <string name="room_description">الوصف (اختياري)</string>
+    <string name="room_public">عامة (مرئية للجميع)</string>
+    <string name="room_button_create">إنشاء</string>
+    <string name="room_button_cancel">إلغاء</string>
+    <string name="room_button_invite">دعوة</string>
+    <string name="room_invite_title">دعوة إلى الغرفة</string>
+    <string name="room_invite_username">اسم المستخدم</string>
+    <string name="room_button_invite_ok">دعوة</string>
+    <string name="room_members_count">%1$d أعضاء</string>
+    
+    <!-- Status -->
+    <string name="status_connecting">جارٍ الاتصال…</string>
+    <string name="status_authorizing">جارٍ التفويض…</string>
+    <string name="status_connected">تم إنشاء قناة آمنة</string>
+    <string name="status_disconnected">تم إغلاق الاتصال</string>
+    
+    <!-- Error -->
+    <string name="error_connection_failed">خطأ في الاتصال: %1$s</string>
+    <string name="error_connection_timeout">انتهت مهلة الاتصال</string>
+    <string name="error_invalid_credentials">اسم المستخدم أو كلمة المرور غير صحيحة</string>
+    <string name="error_login_failed">خطأ في تسجيل الدخول: %1$s</string>
+    <string name="error_registration_timeout">انتهت مهلة التسجيل</string>
+    <string name="error_username_taken">اسم المستخدم مستخدم بالفعل</string>
+    <string name="error_fill_all_fields">يرجى ملء جميع الحقول</string>
+    <string name="error_service_not_ready">الخدمة غير جاهزة، يرجى المحاولة مرة أخرى</string>
+    
+    <!-- Success -->
+    <string name="success_account_created">تم إنشاء الحساب! الآن سجل الدخول.</string>
+    
+    <!-- Notification -->
+    <string name="notification_new_message">رسالة جديدة</string>
+    <string name="notification_incoming_messages">الرسائل الواردة</string>
+    <string name="notification_background_connection">اتصال في الخلفية</string>
+    <string name="notification_background_description">الحفاظ على اتصال الخادم</string>
+    <string name="notification_messages_channel">الرسائل</string>
+    <string name="notification_messages_description">الرسائل الواردة</string>
+    
+    <!-- Content Descriptions -->
+    <string name="content_description_menu">القائمة</string>
+    <string name="content_description_logout">تسجيل الخروج</string>
+    <string name="content_description_send">إرسال</string>
+</resources>

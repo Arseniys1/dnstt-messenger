@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Language Selector Test</title>
+  <style>
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: #0f0f1a;
+      color: #e2e8f0;
+      padding: 40px;
+      max-width: 600px;
+      margin: 0 auto;
+    }
+    
+    h1 {
+      color: #a855f7;
+      margin-bottom: 30px;
+    }
+    
+    .test-section {
+      background: #1a1a2e;
+      border: 1px solid #2d2d4e;
+      border-radius: 10px;
+      padding: 20px;
+      margin-bottom: 20px;
+    }
+    
+    label {
+      display: block;
+      font-size: 0.8rem;
+      color: #64748b;
+      margin-bottom: 8px;
+    }
+    
+    select {
+      background: #0f0f1a;
+      border: 1px solid #2d2d4e;
+      border-radius: 10px;
+      color: #e2e8f0;
+      padding: 10px 12px;
+      font-size: 0.9rem;
+      width: 100%;
+      cursor: pointer;
+      appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%2364748b' d='M6 9L1 4h10z'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 12px center;
+      padding-right: 36px;
+    }
+    
+    select:focus {
+      outline: none;
+      border-color: #7c3aed;
+    }
+    
+    .info {
+      margin-top: 15px;
+      padding: 10px;
+      background: #16213e;
+      border-radius: 8px;
+      font-size: 0.85rem;
+    }
+    
+    .info strong {
+      color: #a855f7;
+    }
+    
+    .status {
+      margin-top: 10px;
+      padding: 8px;
+      border-radius: 6px;
+      font-size: 0.85rem;
+    }
+    
+    .status.success {
+      background: rgba(34, 197, 94, 0.1);
+      color: #22c55e;
+      border: 1px solid rgba(34, 197, 94, 0.3);
+    }
+    
+    .translated-text {
+      margin-top: 20px;
+      padding: 15px;
+      background: #16213e;
+      border-radius: 8px;
+    }
+    
+    .translated-text h3 {
+      margin-top: 0;
+      color: #a855f7;
+      font-size: 1rem;
+    }
+    
+    .text-sample {
+      margin: 10px 0;
+      padding: 8px;
+      background: #0f0f1a;
+      border-radius: 6px;
+      font-size: 0.9rem;
+    }
+  </style>
+</head>
+<body>
+  <h1>🌐 Language Selector Test</h1>
+  
+  <div class="test-section">
+    <label>Language / 语言 / زبان / Язык / اللغة / Dil / Ngôn ngữ</label>
+    <select id="language-selector">
+      <option value="en">English (English)</option>
+      <option value="zh">中文 (Chinese)</option>
+      <option value="fa">فارسی (Farsi)</option>
+      <option value="ru">Русский (Russian)</option>
+      <option value="ar">العربية (Arabic)</option>
+      <option value="tr">Türkçe (Turkish)</option>
+      <option value="vi">Tiếng Việt (Vietnamese)</option>
+    </select>
+    
+    <div class="info">
+      <strong>Current Language:</strong> <span id="current-lang">English</span><br>
+      <strong>Text Direction:</strong> <span id="text-dir">LTR</span><br>
+      <strong>Is RTL:</strong> <span id="is-rtl">No</span>
+    </div>
+    
+    <div id="status" class="status success" style="display: none;">
+      Language changed successfully!
+    </div>
+  </div>
+  
+  <div class="test-section translated-text">
+    <h3>Sample Translations</h3>
+    <div class="text-sample">
+      <strong>App Name:</strong> <span id="app-name">DNSTT Messenger</span>
+    </div>
+    <div class="text-sample">
+      <strong>Login Button:</strong> <span id="login-button">Log In</span>
+    </div>
+    <div class="text-sample">
+      <strong>Settings:</strong> <span id="settings">Settings</span>
+    </div>
+    <div class="text-sample">
+      <strong>Language Label:</strong> <span id="language-label">Language</span>
+    </div>
+    <div class="text-sample">
+      <strong>Chat Title:</strong> <span id="chat-title">Global Chat</span>
+    </div>
+  </div>
+  
+  <div class="test-section">
+    <h3 style="margin-top: 0; color: #a855f7;">Test Instructions</h3>
+    <ol style="line-height: 1.8; font-size: 0.9rem;">
+      <li>Select different languages from the dropdown</li>
+      <li>Verify that the "Current Language" updates</li>
+      <li>Check that RTL languages (Arabic, Farsi) show "RTL" direction</li>
+      <li>Observe that sample translations update (simulated)</li>
+      <li>Verify the dropdown shows native language names</li>
+    </ol>
+  </div>
+  
+  <script>
+    const languageSelector = document.getElementById('language-selector');
+    const currentLangEl = document.getElementById('current-lang');
+    const textDirEl = document.getElementById('text-dir');
+    const isRtlEl = document.getElementById('is-rtl');
+    const statusEl = document.getElementById('status');
+    
+    // Sample translations for demonstration
+    const translations = {
+      en: {
+        name: 'English',
+        appName: 'DNSTT Messenger',
+        loginButton: 'Log In',
+        settings: 'Settings',
+        language: 'Language',
+        chatTitle: 'Global Chat'
+      },
+      zh: {
+        name: '中文',
+        appName: 'DNSTT 信使',
+        loginButton: '登录',
+        settings: '设置',
+        language: '语言',
+        chatTitle: '全局聊天'
+      },
+      fa: {
+        name: 'فارسی',
+        appName: 'پیام‌رسان DNSTT',
+        loginButton: 'ورود',
+        settings: 'تنظیمات',
+        language: 'زبان',
+        chatTitle: 'گفتگوی عمومی'
+      },
+      ru: {
+        name: 'Русский',
+        appName: 'DNSTT Мессенджер',
+        loginButton: 'Войти',
+        settings: 'Настройки',
+        language: 'Язык',
+        chatTitle: 'Общий чат'
+      },
+      ar: {
+        name: 'العربية',
+        appName: 'رسول DNSTT',
+        loginButton: 'تسجيل الدخول',
+        settings: 'الإعدادات',
+        language: 'اللغة',
+        chatTitle: 'الدردشة العامة'
+      },
+      tr: {
+        name: 'Türkçe',
+        appName: 'DNSTT Messenger',
+        loginButton: 'Giriş Yap',
+        settings: 'Ayarlar',
+        language: 'Dil',
+        chatTitle: 'Genel Sohbet'
+      },
+      vi: {
+        name: 'Tiếng Việt',
+        appName: 'DNSTT Messenger',
+        loginButton: 'Đăng nhập',
+        settings: 'Cài đặt',
+        language: 'Ngôn ngữ',
+        chatTitle: 'Trò chuyện chung'
+      }
+    };
+    
+    const rtlLanguages = ['ar', 'fa'];
+    
+    languageSelector.addEventListener('change', (e) => {
+      const lang = e.target.value;
+      const isRtl = rtlLanguages.includes(lang);
+      const trans = translations[lang];
+      
+      // Update info
+      currentLangEl.textContent = trans.name;
+      textDirEl.textContent = isRtl ? 'RTL' : 'LTR';
+      isRtlEl.textContent = isRtl ? 'Yes' : 'No';
+      
+      // Update text direction
+      document.documentElement.setAttribute('dir', isRtl ? 'rtl' : 'ltr');
+      
+      // Update sample translations
+      document.getElementById('app-name').textContent = trans.appName;
+      document.getElementById('login-button').textContent = trans.loginButton;
+      document.getElementById('settings').textContent = trans.settings;
+      document.getElementById('language-label').textContent = trans.language;
+      document.getElementById('chat-title').textContent = trans.chatTitle;
+      
+      // Show status
+      statusEl.style.display = 'block';
+      setTimeout(() => {
+        statusEl.style.display = 'none';
+      }, 2000);
+    });
+  </script>
+</body>
+</html>

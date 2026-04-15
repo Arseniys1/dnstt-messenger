@@ -1,0 +1,97 @@
+<resources>
+    <!-- App -->
+    <string name="app_name">DNSTT Messenger</string>
+    <string name="app_title">DNSTT Messenger</string>
+    
+    <!-- Login -->
+    <string name="login_title">Đăng nhập</string>
+    <string name="login_tab_login">Đăng nhập</string>
+    <string name="login_tab_register">Đăng ký</string>
+    <string name="login_tab_settings">Cài đặt</string>
+    <string name="login_username">Tên người dùng</string>
+    <string name="login_password">Mật khẩu</string>
+    <string name="login_button_login">Đăng nhập</string>
+    <string name="login_button_register">Đăng ký</string>
+    
+    <!-- Settings -->
+    <string name="settings_title">Cài đặt</string>
+    <string name="settings_server_address">Địa chỉ máy chủ</string>
+    <string name="settings_proxy_address">SOCKS5 Proxy (dnstt)</string>
+    <string name="settings_direct_mode">Kết nối trực tiếp (không có proxy)</string>
+    <string name="settings_button_save">Lưu</string>
+    <string name="settings_saved">Đã lưu cài đặt</string>
+    <string name="settings_known_servers">Máy chủ mạng (nhấp để chọn)</string>
+    <string name="settings_language">Ngôn ngữ</string>
+    <string name="settings_language_select">Chọn ngôn ngữ</string>
+    
+    <!-- Chat -->
+    <string name="chat_title_global">Trò chuyện chung</string>
+    <string name="chat_title_general"># Chung</string>
+    <string name="chat_input_placeholder">Tin nhắn…</string>
+    <string name="chat_input_placeholder_dm">Tin nhắn tới %1$s…</string>
+    <string name="chat_input_placeholder_room">Tin nhắn tới phòng…</string>
+    <string name="chat_button_send">Gửi</string>
+    <string name="chat_loading_room">Đang tải phòng…</string>
+    
+    <!-- Sidebar -->
+    <string name="sidebar_section_chats">Trò chuyện</string>
+    <string name="sidebar_section_dms">Tin nhắn trực tiếp</string>
+    <string name="sidebar_section_rooms">Phòng</string>
+    <string name="sidebar_section_online">Trực tuyến (%1$d)</string>
+    <string name="sidebar_button_logout">Đăng xuất</string>
+    <string name="sidebar_button_menu">Trình đơn</string>
+    
+    <!-- DM -->
+    <string name="dm_title">Tin nhắn trực tiếp</string>
+    <string name="dm_new_conversation">Tin nhắn trực tiếp mới</string>
+    <string name="dm_target_user">Tên người dùng</string>
+    <string name="dm_button_cancel">Hủy</string>
+    <string name="dm_button_open">Mở</string>
+    
+    <!-- Room -->
+    <string name="room_title">Phòng</string>
+    <string name="room_create">Tạo phòng</string>
+    <string name="room_create_title">Tạo phòng</string>
+    <string name="room_name">Tên phòng</string>
+    <string name="room_description">Mô tả (tùy chọn)</string>
+    <string name="room_public">Công khai (hiển thị cho tất cả)</string>
+    <string name="room_button_create">Tạo</string>
+    <string name="room_button_cancel">Hủy</string>
+    <string name="room_button_invite">Mời</string>
+    <string name="room_invite_title">Mời vào phòng</string>
+    <string name="room_invite_username">Tên người dùng</string>
+    <string name="room_button_invite_ok">Mời</string>
+    <string name="room_members_count">%1$d thành viên</string>
+    
+    <!-- Status -->
+    <string name="status_connecting">Đang kết nối…</string>
+    <string name="status_authorizing">Đang xác thực…</string>
+    <string name="status_connected">Kênh an toàn đã được thiết lập</string>
+    <string name="status_disconnected">Kết nối đã đóng</string>
+    
+    <!-- Error -->
+    <string name="error_connection_failed">Lỗi kết nối: %1$s</string>
+    <string name="error_connection_timeout">Hết thời gian kết nối</string>
+    <string name="error_invalid_credentials">Tên người dùng hoặc mật khẩu không hợp lệ</string>
+    <string name="error_login_failed">Lỗi đăng nhập: %1$s</string>
+    <string name="error_registration_timeout">Hết thời gian đăng ký</string>
+    <string name="error_username_taken">Tên người dùng đã được sử dụng</string>
+    <string name="error_fill_all_fields">Vui lòng điền tất cả các trường</string>
+    <string name="error_service_not_ready">Dịch vụ chưa sẵn sàng, vui lòng thử lại</string>
+    
+    <!-- Success -->
+    <string name="success_account_created">Tài khoản đã được tạo! Bây giờ hãy đăng nhập.</string>
+    
+    <!-- Notification -->
+    <string name="notification_new_message">Tin nhắn mới</string>
+    <string name="notification_incoming_messages">Tin nhắn đến</string>
+    <string name="notification_background_connection">Kết nối nền</string>
+    <string name="notification_background_description">Duy trì kết nối máy chủ</string>
+    <string name="notification_messages_channel">Tin nhắn</string>
+    <string name="notification_messages_description">Tin nhắn đến</string>
+    
+    <!-- Content Descriptions -->
+    <string name="content_description_menu">Trình đơn</string>
+    <string name="content_description_logout">Đăng xuất</string>
+    <string name="content_description_send">Gửi</string>
+</resources>
