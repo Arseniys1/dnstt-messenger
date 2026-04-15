@@ -16,7 +16,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 
-enum class Screen { LOGIN, CHAT, DM, ROOM }
+enum class Screen { LOGIN, CHAT, DM, ROOM, SETTINGS }
 
 data class DMConversation(
     val partner: String,
@@ -48,7 +48,8 @@ data class UiState(
     val currentRoomId: Long = 0L,
     val unreadDMs: Map<String, Int> = emptyMap(),
     val unreadRooms: Map<Long, Int> = emptyMap(),
-    val pendingRoomJoin: Long = 0L  // Room ID we're trying to join
+    val pendingRoomJoin: Long = 0L,  // Room ID we're trying to join
+    val settingsReturnScreen: Screen = Screen.LOGIN
 )
 
 class MessengerViewModel(app: Application) : AndroidViewModel(app) {
@@ -342,6 +343,21 @@ class MessengerViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    fun openSettings() {
+        val current = _state.value.screen
+        _state.value = _state.value.copy(
+            settingsReturnScreen = if (current == Screen.SETTINGS) _state.value.settingsReturnScreen else current,
+            screen = Screen.SETTINGS
+        )
+    }
+
+    fun closeSettings() {
+        val target = _state.value.settingsReturnScreen
+        _state.value = _state.value.copy(
+            screen = if (target == Screen.SETTINGS) Screen.CHAT else target
+        )
+    }
+
     // ---- Handle events ----
     private fun handleEvent(event: ServerEvent) {
         when (event) {
@@ -374,7 +390,7 @@ class MessengerViewModel(app: Application) : AndroidViewModel(app) {
                 _state.value = _state.value.copy(knownServers = event.addrs)
             }
             is ServerEvent.Disconnected -> {
-                if (_state.value.screen == Screen.CHAT) {
+                if (_state.value.screen != Screen.LOGIN) {
                     _state.value = _state.value.copy(
                         screen = Screen.LOGIN,
                         status = status(R.string.status_connection_lost),

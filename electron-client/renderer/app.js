@@ -18,12 +18,20 @@ const statusEl = document.getElementById('connect-status');
 const onlineListEl = document.getElementById('online-list');
 const messagesEl = document.getElementById('messages');
 const msgInput = document.getElementById('msg-input');
+const inputBar = document.getElementById('input-bar');
 const myUsernameEl = document.getElementById('my-username');
 const chatTitle = document.getElementById('chat-title');
 const chatActions = document.getElementById('chat-header-actions');
 const dmListEl = document.getElementById('dm-list');
 const roomListEl = document.getElementById('room-list-sidebar');
 const navGlobal = document.getElementById('nav-global');
+const settingsView = document.getElementById('settings-view');
+
+const chatCfgServer = document.getElementById('chat-cfg-server');
+const chatCfgProxy = document.getElementById('chat-cfg-proxy');
+const chatCfgDirect = document.getElementById('chat-cfg-direct');
+const chatCfgLanguage = document.getElementById('chat-cfg-language');
+const chatSettingsStatus = document.getElementById('chat-settings-status');
 
 function t(key, vars = {}) {
   const template = (I18N[currentLanguage] && I18N[currentLanguage][key]) || I18N.en[key] || key;
@@ -49,7 +57,9 @@ function applyTranslations() {
   document.getElementById('label-known-servers').textContent = t('knownServers');
   const hint = document.getElementById('server-list-hint');
   if (hint) hint.textContent = t('knownServersHint');
+
   document.getElementById('btn-logout').title = t('signOut');
+  document.getElementById('btn-open-settings').title = t('tabSettings');
   document.getElementById('sidebar-global-label').textContent = t('globalChatSection');
   document.getElementById('nav-global-text').textContent = t('general');
   document.getElementById('sidebar-dm-label').textContent = t('directMessages');
@@ -58,6 +68,17 @@ function applyTranslations() {
   document.getElementById('btn-create-room').title = t('modalCreateRoom');
   document.getElementById('sidebar-online-label').textContent = t('online');
   document.getElementById('msg-input').placeholder = t('messagePlaceholder');
+
+  document.getElementById('chat-settings-title').textContent = t('tabSettings');
+  document.getElementById('chat-label-server').textContent = t('serverAddress');
+  document.getElementById('chat-label-proxy').textContent = t('socksProxy');
+  document.getElementById('chat-label-direct').textContent = t('directConnection');
+  document.getElementById('chat-label-language').textContent = t('language');
+  document.getElementById('btn-chat-save-cfg').textContent = t('save');
+  document.getElementById('chat-label-known-servers').textContent = t('knownServers');
+  const chatHint = document.getElementById('chat-server-list-hint');
+  if (chatHint) chatHint.textContent = t('knownServersHint');
+
   document.getElementById('modal-dm-title').textContent = t('modalNewDm');
   document.getElementById('dm-target-user').placeholder = t('userLogin');
   document.getElementById('btn-dm-cancel').textContent = t('cancel');
@@ -72,6 +93,7 @@ function applyTranslations() {
   document.getElementById('invite-username').placeholder = t('userLogin');
   document.getElementById('btn-invite-cancel').textContent = t('cancel');
   document.getElementById('btn-invite-ok').textContent = t('invite');
+
   refreshCurrentView();
 }
 
@@ -79,6 +101,32 @@ function refreshCurrentView() {
   if (screenChat.classList.contains('active')) switchView(currentView.type, currentView.id);
   else chatTitle.textContent = t('generalChatTitle');
   renderKnownServers(window._knownServersCache || []);
+}
+
+function setConfigForms(cfg) {
+  const language = cfg.language || 'en';
+  document.getElementById('cfg-server').value = cfg.server_addr || '';
+  document.getElementById('cfg-proxy').value = cfg.proxy_addr || '';
+  document.getElementById('cfg-direct').checked = !!cfg.direct_mode;
+  document.getElementById('cfg-language').value = language;
+  chatCfgServer.value = cfg.server_addr || '';
+  chatCfgProxy.value = cfg.proxy_addr || '';
+  chatCfgDirect.checked = !!cfg.direct_mode;
+  chatCfgLanguage.value = language;
+}
+
+function setChatSettingsStatus(msg, type = '') {
+  if (!chatSettingsStatus) return;
+  chatSettingsStatus.textContent = msg || '';
+  chatSettingsStatus.className = 'status ' + type;
+}
+
+async function persistConfig(cfg, options = { chatStatus: false }) {
+  currentLanguage = cfg.language || 'en';
+  await window.api.saveConfig(cfg);
+  setConfigForms(cfg);
+  applyTranslations();
+  if (options.chatStatus) setChatSettingsStatus(t('settingsSaved'), 'ok');
 }
 
 document.querySelectorAll('.tab').forEach(btn => {
@@ -92,15 +140,19 @@ document.querySelectorAll('.tab').forEach(btn => {
 
 window.api.getConfig().then(cfg => {
   currentLanguage = cfg.language || 'en';
-  document.getElementById('cfg-server').value = cfg.server_addr || '';
-  document.getElementById('cfg-proxy').value = cfg.proxy_addr || '';
-  document.getElementById('cfg-direct').checked = !!cfg.direct_mode;
-  document.getElementById('cfg-language').value = currentLanguage;
+  setConfigForms(cfg);
   applyTranslations();
 });
 
 document.getElementById('cfg-language').addEventListener('change', e => {
   currentLanguage = e.target.value || 'en';
+  chatCfgLanguage.value = currentLanguage;
+  applyTranslations();
+});
+
+chatCfgLanguage.addEventListener('change', e => {
+  currentLanguage = e.target.value || 'en';
+  document.getElementById('cfg-language').value = currentLanguage;
   applyTranslations();
 });
 
@@ -111,10 +163,18 @@ document.getElementById('btn-save-cfg').addEventListener('click', async () => {
     direct_mode: document.getElementById('cfg-direct').checked,
     language: document.getElementById('cfg-language').value || 'en',
   };
-  currentLanguage = cfg.language;
-  await window.api.saveConfig(cfg);
-  applyTranslations();
+  await persistConfig(cfg);
   setStatus(t('settingsSaved'), 'ok');
+});
+
+document.getElementById('btn-chat-save-cfg').addEventListener('click', async () => {
+  const cfg = {
+    server_addr: chatCfgServer.value.trim(),
+    proxy_addr: chatCfgProxy.value.trim(),
+    direct_mode: chatCfgDirect.checked,
+    language: chatCfgLanguage.value || 'en',
+  };
+  await persistConfig(cfg, { chatStatus: true });
 });
 
 document.getElementById('btn-register').addEventListener('click', async () => {
@@ -141,7 +201,7 @@ async function doLogin() {
   setStatus(t('connecting'));
   const cfg = await window.api.getConfig();
   currentLanguage = cfg.language || currentLanguage;
-  document.getElementById('cfg-language').value = currentLanguage;
+  setConfigForms(cfg);
   applyTranslations();
   const conn = await window.api.connect(cfg);
   if (!conn.ok) return setStatus(t('connectError', { error: conn.error }), 'error');
@@ -188,13 +248,25 @@ function registerListeners() {
 }
 
 navGlobal.addEventListener('click', () => switchView('global'));
+document.getElementById('btn-open-settings').addEventListener('click', () => switchView('settings'));
 
 function switchView(type, id) {
   currentView = { type, id: id ?? null };
-  messagesEl.innerHTML = '';
+  settingsView.classList.toggle('hidden', type !== 'settings');
+  messagesEl.classList.toggle('hidden', type === 'settings');
+  inputBar.classList.toggle('hidden', type === 'settings');
   navGlobal.classList.toggle('active', type === 'global');
   document.querySelectorAll('.dm-item').forEach(el => el.classList.toggle('active', type === 'dm' && el.dataset.user === id));
   document.querySelectorAll('.room-item').forEach(el => el.classList.toggle('active', type === 'room' && Number(el.dataset.roomid) === id));
+
+  if (type === 'settings') {
+    chatTitle.textContent = t('tabSettings');
+    chatActions.innerHTML = '';
+    setChatSettingsStatus('');
+    return;
+  }
+
+  messagesEl.innerHTML = '';
   if (type === 'global') {
     chatTitle.textContent = `# ${t('generalChatTitle')}`;
     chatActions.innerHTML = '';
@@ -271,7 +343,7 @@ msgInput.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey
 
 function sendMsg() {
   const text = msgInput.value.trim();
-  if (!text || !connected) return;
+  if (!text || !connected || currentView.type === 'settings') return;
   const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   if (currentView.type === 'global') {
     window.api.sendMessage(text);
@@ -355,6 +427,7 @@ document.getElementById('btn-logout').addEventListener('click', async () => {
   await window.api.disconnect();
   showConnect();
   setStatus('');
+  setChatSettingsStatus('');
   onlineListEl.innerHTML = '';
   dmListEl.innerHTML = '';
   roomListEl.innerHTML = '';
@@ -374,6 +447,9 @@ function showChat() {
   myUsernameEl.textContent = myUsername;
   messagesEl.innerHTML = '';
   navGlobal.classList.add('active');
+  settingsView.classList.add('hidden');
+  messagesEl.classList.remove('hidden');
+  inputBar.classList.remove('hidden');
   chatTitle.textContent = `# ${t('generalChatTitle')}`;
 }
 
@@ -405,11 +481,42 @@ function bumpUnread(type, id) { if (type === 'dm') { unread.dm.set(id, (unread.d
 
 function renderKnownServers(servers) {
   window._knownServersCache = servers;
-  const container = document.getElementById('server-list-container');
+  renderKnownServersFor('server-list-container', servers, async (addr) => {
+    document.getElementById('cfg-server').value = addr;
+    document.getElementById('cfg-direct').checked = true;
+    const cfg = {
+      server_addr: addr,
+      proxy_addr: document.getElementById('cfg-proxy').value.trim(),
+      direct_mode: true,
+      language: currentLanguage,
+    };
+    await persistConfig(cfg);
+    document.querySelectorAll('.tab').forEach(tab => tab.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(tab => tab.classList.remove('active'));
+    document.querySelector('.tab[data-tab="settings"]').classList.add('active');
+    document.getElementById('tab-settings').classList.add('active');
+    setStatus(t('serverSelected', { addr }), 'ok');
+  });
+  renderKnownServersFor('chat-server-list-container', servers, async (addr) => {
+    chatCfgServer.value = addr;
+    chatCfgDirect.checked = true;
+    const cfg = {
+      server_addr: addr,
+      proxy_addr: chatCfgProxy.value.trim(),
+      direct_mode: true,
+      language: currentLanguage,
+    };
+    await persistConfig(cfg, { chatStatus: true });
+    setChatSettingsStatus(t('serverSelected', { addr }), 'ok');
+  });
+}
+
+function renderKnownServersFor(containerId, servers, onPick) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
   container.innerHTML = '';
   if (!servers || servers.length === 0) {
     const small = document.createElement('small');
-    small.id = 'server-list-hint';
     small.textContent = t('knownServersEmpty');
     container.appendChild(small);
     return;
@@ -420,20 +527,7 @@ function renderKnownServers(servers) {
     btn.textContent = addr;
     btn.title = t('connectToServer', { addr });
     btn.addEventListener('click', async () => {
-      document.getElementById('cfg-server').value = addr;
-      document.getElementById('cfg-direct').checked = true;
-      const cfg = {
-        server_addr: addr,
-        proxy_addr: document.getElementById('cfg-proxy').value.trim(),
-        direct_mode: true,
-        language: currentLanguage,
-      };
-      await window.api.saveConfig(cfg);
-      document.querySelectorAll('.tab').forEach(tab => tab.classList.remove('active'));
-      document.querySelectorAll('.tab-content').forEach(tab => tab.classList.remove('active'));
-      document.querySelector('.tab[data-tab="settings"]').classList.add('active');
-      document.getElementById('tab-settings').classList.add('active');
-      setStatus(t('serverSelected', { addr }), 'ok');
+      await onPick(addr);
     });
     container.appendChild(btn);
   });

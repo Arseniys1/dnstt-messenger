@@ -18,9 +18,11 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ExitToApp
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -87,27 +89,29 @@ fun MessengerApp(vm: MessengerViewModel = viewModel()) {
         Screen.CHAT  -> ChatScreen(state, vm)
         Screen.DM    -> DMScreen(state, vm)
         Screen.ROOM  -> RoomScreen(state, vm)
+        Screen.SETTINGS -> SettingsScreen(state, vm)
     }
 }
 
-// ---- Login / Register / Settings screen ----
+data class LanguageOption(val code: String, val labelRes: Int)
+
+private fun languageOptions(): List<LanguageOption> = listOf(
+    LanguageOption("en", R.string.lang_english),
+    LanguageOption("ru", R.string.lang_russian),
+    LanguageOption("zh", R.string.lang_chinese_simplified),
+    LanguageOption("fa", R.string.lang_persian),
+    LanguageOption("tr", R.string.lang_turkish)
+)
+
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
-fun LoginScreen(state: UiState, vm: MessengerViewModel) {
-    val lang = state.config.language
-    data class LanguageOption(val code: String, val labelRes: Int)
-    val languageOptions = listOf(
-        LanguageOption("en", R.string.lang_english),
-        LanguageOption("ru", R.string.lang_russian),
-        LanguageOption("zh", R.string.lang_chinese_simplified),
-        LanguageOption("fa", R.string.lang_persian),
-        LanguageOption("tr", R.string.lang_turkish)
-    )
-    var tab by remember { mutableIntStateOf(0) }
-    var loginUser by remember { mutableStateOf("") }
-    var loginPass by remember { mutableStateOf("") }
-    var regUser by remember { mutableStateOf("") }
-    var regPass by remember { mutableStateOf("") }
+private fun SettingsForm(
+    lang: String,
+    state: UiState,
+    onSave: (AppConfig) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val options = languageOptions()
     var cfgServer by remember { mutableStateOf(state.config.serverAddr) }
     var cfgProxy by remember { mutableStateOf(state.config.proxyAddr) }
     var cfgDirect by remember { mutableStateOf(state.config.directMode) }
@@ -120,6 +124,98 @@ fun LoginScreen(state: UiState, vm: MessengerViewModel) {
         cfgDirect = state.config.directMode
         cfgLanguage = state.config.language
     }
+
+    Column(modifier = modifier) {
+        OutlinedTextField(
+            value = cfgServer, onValueChange = { cfgServer = it },
+            label = { Text(t(lang, R.string.label_server_address)) },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
+        Spacer(Modifier.height(8.dp))
+        OutlinedTextField(
+            value = cfgProxy, onValueChange = { cfgProxy = it },
+            label = { Text(t(lang, R.string.label_socks_proxy)) },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
+        Spacer(Modifier.height(8.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Checkbox(checked = cfgDirect, onCheckedChange = { cfgDirect = it })
+            Text(t(lang, R.string.label_direct_connection))
+        }
+        Spacer(Modifier.height(8.dp))
+        Text(t(lang, R.string.label_language), fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        ExposedDropdownMenuBox(
+            expanded = languageExpanded,
+            onExpandedChange = { languageExpanded = !languageExpanded }
+        ) {
+            val selectedLanguage = options.firstOrNull { it.code == cfgLanguage } ?: options.first()
+            OutlinedTextField(
+                value = t(lang, selectedLanguage.labelRes),
+                onValueChange = {},
+                readOnly = true,
+                singleLine = true,
+                modifier = Modifier
+                    .menuAnchor()
+                    .fillMaxWidth(),
+                trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = languageExpanded) }
+            )
+            ExposedDropdownMenu(
+                expanded = languageExpanded,
+                onDismissRequest = { languageExpanded = false }
+            ) {
+                options.forEach { option ->
+                    DropdownMenuItem(
+                        text = { Text(t(lang, option.labelRes)) },
+                        onClick = {
+                            cfgLanguage = option.code
+                            languageExpanded = false
+                        }
+                    )
+                }
+            }
+        }
+        Spacer(Modifier.height(16.dp))
+        Button(
+            onClick = { onSave(AppConfig(cfgServer, cfgProxy, cfgDirect, cfgLanguage)) },
+            modifier = Modifier.fillMaxWidth()
+        ) { Text(t(lang, R.string.action_save)) }
+
+        if (state.knownServers.isNotEmpty()) {
+            Spacer(Modifier.height(16.dp))
+            Text(
+                t(lang, R.string.label_network_servers),
+                fontSize = 13.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.height(6.dp))
+            state.knownServers.forEach { addr ->
+                OutlinedButton(
+                    onClick = {
+                        cfgServer = addr
+                        cfgDirect = true
+                        onSave(AppConfig(addr, cfgProxy, true, cfgLanguage))
+                    },
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)
+                ) {
+                    Text(addr, fontSize = 13.sp, maxLines = 1)
+                }
+            }
+        }
+    }
+}
+
+// ---- Login / Register / Settings screen ----
+@Composable
+@OptIn(ExperimentalMaterial3Api::class)
+fun LoginScreen(state: UiState, vm: MessengerViewModel) {
+    val lang = state.config.language
+    var tab by remember { mutableIntStateOf(0) }
+    var loginUser by remember { mutableStateOf("") }
+    var loginPass by remember { mutableStateOf("") }
+    var regUser by remember { mutableStateOf("") }
+    var regPass by remember { mutableStateOf("") }
 
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(
@@ -200,83 +296,12 @@ fun LoginScreen(state: UiState, vm: MessengerViewModel) {
                     }
                 }
                 2 -> {
-                    OutlinedTextField(
-                        value = cfgServer, onValueChange = { cfgServer = it },
-                        label = { Text(t(lang, R.string.label_server_address)) },
-                        singleLine = true,
+                    SettingsForm(
+                        lang = lang,
+                        state = state,
+                        onSave = vm::saveConfig,
                         modifier = Modifier.fillMaxWidth()
                     )
-                    Spacer(Modifier.height(8.dp))
-                    OutlinedTextField(
-                        value = cfgProxy, onValueChange = { cfgProxy = it },
-                        label = { Text(t(lang, R.string.label_socks_proxy)) },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Checkbox(checked = cfgDirect, onCheckedChange = { cfgDirect = it })
-                        Text(t(lang, R.string.label_direct_connection))
-                    }
-                    Spacer(Modifier.height(8.dp))
-                    Text(t(lang, R.string.label_language), fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    ExposedDropdownMenuBox(
-                        expanded = languageExpanded,
-                        onExpandedChange = { languageExpanded = !languageExpanded }
-                    ) {
-                        val selectedLanguage = languageOptions.firstOrNull { it.code == cfgLanguage } ?: languageOptions.first()
-                        OutlinedTextField(
-                            value = t(lang, selectedLanguage.labelRes),
-                            onValueChange = {},
-                            readOnly = true,
-                            singleLine = true,
-                            modifier = Modifier
-                                .menuAnchor()
-                                .fillMaxWidth(),
-                            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = languageExpanded) }
-                        )
-                        ExposedDropdownMenu(
-                            expanded = languageExpanded,
-                            onDismissRequest = { languageExpanded = false }
-                        ) {
-                            languageOptions.forEach { option ->
-                                DropdownMenuItem(
-                                    text = { Text(t(lang, option.labelRes)) },
-                                    onClick = {
-                                        cfgLanguage = option.code
-                                        languageExpanded = false
-                                    }
-                                )
-                            }
-                        }
-                    }
-                    Spacer(Modifier.height(16.dp))
-                    Button(
-                        onClick = { vm.saveConfig(AppConfig(cfgServer, cfgProxy, cfgDirect, cfgLanguage)) },
-                        modifier = Modifier.fillMaxWidth()
-                    ) { Text(t(lang, R.string.action_save)) }
-
-                    if (state.knownServers.isNotEmpty()) {
-                        Spacer(Modifier.height(16.dp))
-                        Text(
-                            t(lang, R.string.label_network_servers),
-                            fontSize = 13.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Spacer(Modifier.height(6.dp))
-                        state.knownServers.forEach { addr ->
-                            OutlinedButton(
-                                onClick = {
-                                    cfgServer = addr
-                                    cfgDirect = true
-                                    vm.saveConfig(AppConfig(addr, cfgProxy, true, cfgLanguage))
-                                },
-                                modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)
-                            ) {
-                                Text(addr, fontSize = 13.sp, maxLines = 1)
-                            }
-                        }
-                    }
                 }
             }
 
@@ -288,6 +313,40 @@ fun LoginScreen(state: UiState, vm: MessengerViewModel) {
                     fontSize = 14.sp
                 )
             }
+        }
+    }
+}
+
+@Composable
+fun SettingsScreen(state: UiState, vm: MessengerViewModel) {
+    val lang = state.config.language
+    BackHandler { vm.closeSettings() }
+
+    Scaffold(
+        topBar = {
+            @OptIn(ExperimentalMaterial3Api::class)
+            TopAppBar(
+                title = { Text(t(lang, R.string.tab_settings), fontWeight = FontWeight.Bold) },
+                navigationIcon = {
+                    IconButton(onClick = { vm.closeSettings() }) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = t(lang, R.string.action_cancel))
+                    }
+                }
+            )
+        }
+    ) { padding ->
+        Column(
+            modifier = Modifier
+                .padding(padding)
+                .fillMaxSize()
+                .padding(16.dp)
+        ) {
+            SettingsForm(
+                lang = lang,
+                state = state,
+                onSave = vm::saveConfig,
+                modifier = Modifier.fillMaxWidth()
+            )
         }
     }
 }
@@ -317,6 +376,9 @@ fun ChatScreen(state: UiState, vm: MessengerViewModel) {
                     }
                 },
                 actions = {
+                    IconButton(onClick = { vm.openSettings() }) {
+                        Icon(Icons.Default.Settings, contentDescription = t(state.config.language, R.string.tab_settings))
+                    }
                     IconButton(onClick = { vm.logout() }) {
                         Icon(
                             Icons.AutoMirrored.Filled.ExitToApp,
@@ -466,6 +528,13 @@ fun NavigationSidebar(state: UiState, vm: MessengerViewModel, onDismiss: () -> U
                         text = t(state.config.language, R.string.label_global_chat),
                         selected = state.screen == Screen.CHAT,
                         onClick = { vm.switchToGlobalChat(); onDismiss() }
+                    )
+                }
+                item {
+                    NavigationItem(
+                        text = t(state.config.language, R.string.tab_settings),
+                        selected = state.screen == Screen.SETTINGS,
+                        onClick = { vm.openSettings(); onDismiss() }
                     )
                 }
 
@@ -663,6 +732,9 @@ fun DMScreen(state: UiState, vm: MessengerViewModel) {
                     }
                 },
                 actions = {
+                    IconButton(onClick = { vm.openSettings() }) {
+                        Icon(Icons.Default.Settings, contentDescription = t(state.config.language, R.string.tab_settings))
+                    }
                     IconButton(onClick = { vm.switchToGlobalChat() }) {
                         Text("←", fontSize = 24.sp)
                     }
@@ -779,6 +851,9 @@ fun RoomScreen(state: UiState, vm: MessengerViewModel) {
                     }
                 },
                 actions = {
+                    IconButton(onClick = { vm.openSettings() }) {
+                        Icon(Icons.Default.Settings, contentDescription = t(state.config.language, R.string.tab_settings))
+                    }
                     IconButton(onClick = { showInviteDialog = true }) {
                         Text("+", fontSize = 24.sp)
                     }

@@ -53,7 +53,10 @@
   <aside id="sidebar">
     <div id="sidebar-header">
       <span id="my-username"></span>
-      <button id="btn-logout" title="Sign out">&#x23FB;</button>
+      <div class="sidebar-header-actions">
+        <button id="btn-open-settings" title="Settings">&#9881;</button>
+        <button id="btn-logout" title="Sign out">&#x23FB;</button>
+      </div>
     </div>
     <div class="sidebar-section-label" id="sidebar-global-label">Global chat</div>
     <ul id="sidebar-nav">
@@ -79,6 +82,33 @@
       <span id="chat-title">General chat</span>
       <div id="chat-header-actions"></div>
     </div>
+    <section id="settings-view" class="hidden">
+      <div class="settings-card">
+        <h3 id="chat-settings-title">Settings</h3>
+        <label id="chat-label-server">Server address</label>
+        <input id="chat-cfg-server" type="text" placeholder="host:port" />
+        <label id="chat-label-proxy">SOCKS5 proxy (dnstt)</label>
+        <input id="chat-cfg-proxy" type="text" placeholder="127.0.0.1:18000" />
+        <label class="row-label">
+          <input id="chat-cfg-direct" type="checkbox" />
+          <span id="chat-label-direct">Direct connection (no proxy)</span>
+        </label>
+        <label id="chat-label-language">Language</label>
+        <select id="chat-cfg-language">
+          <option value="en">English</option>
+          <option value="ru">Русский</option>
+          <option value="zh">简体中文</option>
+          <option value="fa">فارسی</option>
+          <option value="tr">Türkçe</option>
+        </select>
+        <div class="settings-actions">
+          <button id="btn-chat-save-cfg" class="btn-primary">Save</button>
+        </div>
+        <div id="chat-settings-status" class="status"></div>
+        <label id="chat-label-known-servers" style="margin-top:12px">Network servers (click to switch)</label>
+        <div id="chat-server-list-container"><small id="chat-server-list-hint">Available after sign in</small></div>
+      </div>
+    </section>
     <div id="messages"></div>
     <div id="input-bar">
       <textarea id="msg-input" placeholder="Message..." rows="1"></textarea>
