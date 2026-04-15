@@ -114,39 +114,37 @@ class MessengerViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---- Register ----
     fun register(login: String, pass: String) {
-        val ctx = getApplication<Application>()
         if (login.isBlank() || pass.isBlank()) {
-            setStatus(ctx.getString(R.string.error_fill_all_fields), error = true); return
+            setStatus("Заполните все поля", error = true); return
         }
         viewModelScope.launch {
-            setStatus(ctx.getString(R.string.status_connecting), loading = true)
+            setStatus("Подключение...", loading = true)
             val c = MessengerClient()
             val connResult = withTimeoutOrNull(12_000) { c.connect(_state.value.config) }
             if (connResult == null || connResult.isFailure) {
                 c.destroy()
-                setStatus(ctx.getString(R.string.error_connection_failed, connResult?.exceptionOrNull()?.message ?: ctx.getString(R.string.error_connection_timeout)), error = true)
+                setStatus("Ошибка подключения: ${connResult?.exceptionOrNull()?.message ?: "таймаут"}", error = true)
                 return@launch
             }
             val regResult = withTimeoutOrNull(6_000) { c.register(login, pass) }
             c.destroy()
             when {
-                regResult == null -> setStatus(ctx.getString(R.string.error_registration_timeout), error = true)
-                regResult.getOrNull() == true -> setStatus(ctx.getString(R.string.success_account_created))
-                else -> setStatus(ctx.getString(R.string.error_username_taken), error = true)
+                regResult == null -> setStatus("Таймаут регистрации", error = true)
+                regResult.getOrNull() == true -> setStatus("Аккаунт создан! Теперь войдите.")
+                else -> setStatus("Логин уже занят", error = true)
             }
         }
     }
 
     // ---- Login ----
     fun login(login: String, pass: String) {
-        val ctx = getApplication<Application>()
         if (login.isBlank() || pass.isBlank()) {
-            setStatus(ctx.getString(R.string.error_fill_all_fields), error = true); return
+            setStatus("Заполните все поля", error = true); return
         }
         viewModelScope.launch {
             // Wait up to 3s for service to bind
             val svc = waitForService() ?: run {
-                setStatus(ctx.getString(R.string.error_service_not_ready), error = true); return@launch
+                setStatus("Сервис не готов, попробуйте снова", error = true); return@launch
             }
 
             // Clear previous session state before connecting — avoids the race where
@@ -155,23 +153,23 @@ class MessengerViewModel(app: Application) : AndroidViewModel(app) {
             _state.value = _state.value.copy(
                 messages = emptyList(),
                 onlineUsers = emptyList(),
-                status = ctx.getString(R.string.status_connecting),
+                status = "Подключение...",
                 isLoading = true,
                 isError = false
             )
             val connResult = withTimeoutOrNull(12_000) { svc.connect(_state.value.config) }
             if (connResult == null || connResult.isFailure) {
-                setStatus(ctx.getString(R.string.error_connection_failed, connResult?.exceptionOrNull()?.message ?: ctx.getString(R.string.error_connection_timeout)), error = true)
+                setStatus("Ошибка подключения: ${connResult?.exceptionOrNull()?.message ?: "таймаут"}", error = true)
                 return@launch
             }
 
-            setStatus(ctx.getString(R.string.status_authorizing), loading = true)
+            setStatus("Авторизация...", loading = true)
             // login() has its own 8s timeout internally
             val loginResult = svc.login(login, pass)
             if (loginResult.isFailure) {
                 val msg = loginResult.exceptionOrNull()?.message ?: ""
-                val text = if (msg == "Invalid credentials") ctx.getString(R.string.error_invalid_credentials)
-                           else ctx.getString(R.string.error_login_failed, msg)
+                val text = if (msg == "Invalid credentials") "Неверный логин или пароль"
+                           else "Ошибка входа: $msg"
                 setStatus(text, error = true)
                 return@launch
             }
@@ -368,10 +366,9 @@ class MessengerViewModel(app: Application) : AndroidViewModel(app) {
             }
             is ServerEvent.Disconnected -> {
                 if (_state.value.screen == Screen.CHAT) {
-                    val ctx = getApplication<Application>()
                     _state.value = _state.value.copy(
                         screen = Screen.LOGIN,
-                        status = ctx.getString(R.string.status_disconnected),
+                        status = "Соединение разорвано",
                         isError = true,
                         isLoading = false,
                         messages = emptyList(),

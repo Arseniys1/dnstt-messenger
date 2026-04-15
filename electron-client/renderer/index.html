@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="ru">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -14,42 +14,38 @@
     <h1 class="logo">🔐 DNSTT Messenger</h1>
 
     <div id="tab-bar">
-      <button class="tab active" data-tab="login">Login</button>
-      <button class="tab" data-tab="register">Register</button>
-      <button class="tab" data-tab="settings">Settings</button>
+      <button class="tab active" data-tab="login">Вход</button>
+      <button class="tab" data-tab="register">Регистрация</button>
+      <button class="tab" data-tab="settings">Настройки</button>
     </div>
 
     <!-- Вход -->
     <div id="tab-login" class="tab-content active">
-      <input id="login-user" type="text" placeholder="Username" autocomplete="off" />
-      <input id="login-pass" type="password" placeholder="Password" />
-      <button id="btn-login" class="btn-primary">Log In</button>
+      <input id="login-user" type="text" placeholder="Логин" autocomplete="off" />
+      <input id="login-pass" type="password" placeholder="Пароль" />
+      <button id="btn-login" class="btn-primary">Войти</button>
     </div>
 
     <!-- Регистрация -->
     <div id="tab-register" class="tab-content">
-      <input id="reg-user" type="text" placeholder="Username" autocomplete="off" />
-      <input id="reg-pass" type="password" placeholder="Password" />
-      <button id="btn-register" class="btn-primary">Register</button>
+      <input id="reg-user" type="text" placeholder="Логин" autocomplete="off" />
+      <input id="reg-pass" type="password" placeholder="Пароль" />
+      <button id="btn-register" class="btn-primary">Зарегистрироваться</button>
     </div>
 
     <!-- Настройки -->
     <div id="tab-settings" class="tab-content">
-      <label>Language</label>
-      <select id="cfg-language" class="language-selector">
-        <!-- Options will be populated dynamically -->
-      </select>
-      <label>Server Address</label>
+      <label>Адрес сервера</label>
       <input id="cfg-server" type="text" placeholder="host:port" />
-      <label>SOCKS5 Proxy (dnstt)</label>
+      <label>SOCKS5 прокси (dnstt)</label>
       <input id="cfg-proxy" type="text" placeholder="127.0.0.1:18000" />
       <label class="row-label">
         <input id="cfg-direct" type="checkbox" />
-        Direct connection (without proxy)
+        Прямое подключение (без прокси)
       </label>
-      <button id="btn-save-cfg" class="btn-secondary">Save</button>
-      <label style="margin-top:12px">Network servers (click to select)</label>
-      <div id="server-list-container"><small>Will appear after login</small></div>
+      <button id="btn-save-cfg" class="btn-secondary">Сохранить</button>
+      <label style="margin-top:12px">Серверы сети (нажми чтобы переключиться)</label>
+      <div id="server-list-container"><small>Появится после входа</small></div>
     </div>
 
     <div id="connect-status" class="status"></div>
@@ -61,44 +57,44 @@
   <aside id="sidebar">
     <div id="sidebar-header">
       <span id="my-username"></span>
-      <button id="btn-logout" title="Log Out">⏻</button>
+      <button id="btn-logout" title="Выйти">⏻</button>
     </div>
 
     <!-- Глобальный чат -->
-    <div class="sidebar-section-label">Global Chat</div>
+    <div class="sidebar-section-label">Глобальный чат</div>
     <ul id="sidebar-nav">
       <li id="nav-global" class="nav-item active" data-view="global">
-        <span class="nav-icon">#</span> General
+        <span class="nav-icon">#</span> Общий
       </li>
     </ul>
 
     <!-- Личные сообщения -->
     <div class="sidebar-section-label">
-      Direct Messages
-      <button id="btn-new-dm" class="btn-section-add" title="New DM">+</button>
+      Личные сообщения
+      <button id="btn-new-dm" class="btn-section-add" title="Новое ЛС">+</button>
     </div>
     <ul id="dm-list"></ul>
 
     <!-- Комнаты -->
     <div class="sidebar-section-label">
-      Rooms
-      <button id="btn-create-room" class="btn-section-add" title="Create Room">+</button>
+      Комнаты
+      <button id="btn-create-room" class="btn-section-add" title="Создать комнату">+</button>
     </div>
     <ul id="room-list-sidebar"></ul>
 
     <!-- Онлайн пользователи (свёрнуто) -->
-    <div class="sidebar-section-label">Online</div>
+    <div class="sidebar-section-label">Онлайн</div>
     <ul id="online-list"></ul>
   </aside>
 
   <main id="chat-area">
     <div id="chat-header">
-      <span id="chat-title">Global Chat</span>
+      <span id="chat-title">Общий чат</span>
       <div id="chat-header-actions"></div>
     </div>
     <div id="messages"></div>
     <div id="input-bar">
-      <textarea id="msg-input" placeholder="Message..." rows="1"></textarea>
+      <textarea id="msg-input" placeholder="Сообщение..." rows="1"></textarea>
       <button id="btn-send">➤</button>
     </div>
   </main>
@@ -107,11 +103,11 @@
 <!-- МОДАЛЬНОЕ ОКНО: новое ЛС -->
 <div id="modal-dm" class="modal-overlay hidden">
   <div class="modal">
-    <h3>New Direct Message</h3>
-    <input id="dm-target-user" type="text" placeholder="Username" autocomplete="off" />
+    <h3>Новое личное сообщение</h3>
+    <input id="dm-target-user" type="text" placeholder="Логин пользователя" autocomplete="off" />
     <div class="modal-actions">
-      <button id="btn-dm-cancel" class="btn-secondary">Cancel</button>
-      <button id="btn-dm-open" class="btn-primary">Open</button>
+      <button id="btn-dm-cancel" class="btn-secondary">Отмена</button>
+      <button id="btn-dm-open" class="btn-primary">Открыть</button>
     </div>
   </div>
 </div>
@@ -119,16 +115,16 @@
 <!-- МОДАЛЬНОЕ ОКНО: создать комнату -->
 <div id="modal-create-room" class="modal-overlay hidden">
   <div class="modal">
-    <h3>Create Room</h3>
-    <input id="room-name-input" type="text" placeholder="Room Name" autocomplete="off" />
-    <input id="room-desc-input" type="text" placeholder="Description (optional)" />
+    <h3>Создать комнату</h3>
+    <input id="room-name-input" type="text" placeholder="Название комнаты" autocomplete="off" />
+    <input id="room-desc-input" type="text" placeholder="Описание (необязательно)" />
     <label class="row-label">
       <input id="room-public-check" type="checkbox" />
-      Public (visible to all)
+      Публичная (видна всем)
     </label>
     <div class="modal-actions">
-      <button id="btn-create-room-cancel" class="btn-secondary">Cancel</button>
-      <button id="btn-create-room-ok" class="btn-primary">Create</button>
+      <button id="btn-create-room-cancel" class="btn-secondary">Отмена</button>
+      <button id="btn-create-room-ok" class="btn-primary">Создать</button>
     </div>
   </div>
 </div>
@@ -136,11 +132,11 @@
 <!-- МОДАЛЬНОЕ ОКНО: пригласить в комнату -->
 <div id="modal-invite" class="modal-overlay hidden">
   <div class="modal">
-    <h3>Invite to Room</h3>
-    <input id="invite-username" type="text" placeholder="Username" autocomplete="off" />
+    <h3>Пригласить в комнату</h3>
+    <input id="invite-username" type="text" placeholder="Логин пользователя" autocomplete="off" />
     <div class="modal-actions">
-      <button id="btn-invite-cancel" class="btn-secondary">Cancel</button>
-      <button id="btn-invite-ok" class="btn-primary">Invite</button>
+      <button id="btn-invite-cancel" class="btn-secondary">Отмена</button>
+      <button id="btn-invite-ok" class="btn-primary">Пригласить</button>
     </div>
   </div>
 </div>

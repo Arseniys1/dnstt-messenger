@@ -16,12 +16,12 @@ object Notifications {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val nm = context.getSystemService(NotificationManager::class.java)
             nm.createNotificationChannel(
-                NotificationChannel(MSG_CHANNEL_ID, context.getString(R.string.notification_messages_channel), NotificationManager.IMPORTANCE_HIGH)
-                    .apply { description = context.getString(R.string.notification_messages_description) }
+                NotificationChannel(MSG_CHANNEL_ID, "Сообщения", NotificationManager.IMPORTANCE_HIGH)
+                    .apply { description = "Входящие сообщения" }
             )
             nm.createNotificationChannel(
-                NotificationChannel(SERVICE_CHANNEL_ID, context.getString(R.string.notification_background_connection), NotificationManager.IMPORTANCE_LOW)
-                    .apply { description = context.getString(R.string.notification_background_description) }
+                NotificationChannel(SERVICE_CHANNEL_ID, "Фоновое соединение", NotificationManager.IMPORTANCE_LOW)
+                    .apply { description = "Поддержание соединения с сервером" }
             )
         }
     }

@@ -93,7 +93,6 @@ fun MessengerApp(vm: MessengerViewModel = viewModel()) {
 // ---- Login / Register / Settings screen ----
 @Composable
 fun LoginScreen(state: UiState, vm: MessengerViewModel) {
-    val context = androidx.compose.ui.platform.LocalContext.current
     var tab by remember { mutableIntStateOf(0) }
     var loginUser by remember { mutableStateOf("") }
     var loginPass by remember { mutableStateOf("") }
@@ -118,7 +117,7 @@ fun LoginScreen(state: UiState, vm: MessengerViewModel) {
             verticalArrangement = Arrangement.Center
         ) {
             Text(
-                "🔐 ${context.getString(R.string.app_title)}",
+                "🔐 DNSTT Messenger",
                 fontSize = 24.sp,
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.primary,
@@ -126,9 +125,9 @@ fun LoginScreen(state: UiState, vm: MessengerViewModel) {
             )
 
             TabRow(selectedTabIndex = tab) {
-                Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text(context.getString(R.string.login_tab_login)) })
-                Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text(context.getString(R.string.login_tab_register)) })
-                Tab(selected = tab == 2, onClick = { tab = 2 }, text = { Text(context.getString(R.string.login_tab_settings)) })
+                Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text("Вход") })
+                Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("Регистрация") })
+                Tab(selected = tab == 2, onClick = { tab = 2 }, text = { Text("Настройки") })
             }
 
             Spacer(Modifier.height(16.dp))
@@ -137,14 +136,14 @@ fun LoginScreen(state: UiState, vm: MessengerViewModel) {
                 0 -> {
                     OutlinedTextField(
                         value = loginUser, onValueChange = { loginUser = it },
-                        label = { Text(context.getString(R.string.login_username)) }, singleLine = true,
+                        label = { Text("Логин") }, singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next)
                     )
                     Spacer(Modifier.height(8.dp))
                     OutlinedTextField(
                         value = loginPass, onValueChange = { loginPass = it },
-                        label = { Text(context.getString(R.string.login_password)) }, singleLine = true,
+                        label = { Text("Пароль") }, singleLine = true,
                         visualTransformation = PasswordVisualTransformation(),
                         modifier = Modifier.fillMaxWidth(),
                         keyboardOptions = KeyboardOptions(
@@ -160,20 +159,20 @@ fun LoginScreen(state: UiState, vm: MessengerViewModel) {
                         enabled = !state.isLoading
                     ) {
                         if (state.isLoading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                        else Text(context.getString(R.string.login_button_login))
+                        else Text("Войти")
                     }
                 }
                 1 -> {
                     OutlinedTextField(
                         value = regUser, onValueChange = { regUser = it },
-                        label = { Text(context.getString(R.string.login_username)) }, singleLine = true,
+                        label = { Text("Логин") }, singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next)
                     )
                     Spacer(Modifier.height(8.dp))
                     OutlinedTextField(
                         value = regPass, onValueChange = { regPass = it },
-                        label = { Text(context.getString(R.string.login_password)) }, singleLine = true,
+                        label = { Text("Пароль") }, singleLine = true,
                         visualTransformation = PasswordVisualTransformation(),
                         modifier = Modifier.fillMaxWidth(),
                         keyboardOptions = KeyboardOptions(
@@ -189,42 +188,37 @@ fun LoginScreen(state: UiState, vm: MessengerViewModel) {
                         enabled = !state.isLoading
                     ) {
                         if (state.isLoading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                        else Text(context.getString(R.string.login_button_register))
+                        else Text("Зарегистрироваться")
                     }
                 }
                 2 -> {
                     OutlinedTextField(
                         value = cfgServer, onValueChange = { cfgServer = it },
-                        label = { Text(context.getString(R.string.settings_server_address)) }, singleLine = true,
+                        label = { Text("Адрес сервера") }, singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
                     Spacer(Modifier.height(8.dp))
                     OutlinedTextField(
                         value = cfgProxy, onValueChange = { cfgProxy = it },
-                        label = { Text(context.getString(R.string.settings_proxy_address)) }, singleLine = true,
+                        label = { Text("SOCKS5 прокси (dnstt)") }, singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
                     Spacer(Modifier.height(8.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Checkbox(checked = cfgDirect, onCheckedChange = { cfgDirect = it })
-                        Text(context.getString(R.string.settings_direct_mode))
+                        Text("Прямое подключение (без прокси)")
                     }
-                    Spacer(Modifier.height(16.dp))
-                    
-                    // Language selection
-                    LanguageSelector(context)
-                    
                     Spacer(Modifier.height(16.dp))
                     Button(
                         onClick = { vm.saveConfig(AppConfig(cfgServer, cfgProxy, cfgDirect)) },
                         modifier = Modifier.fillMaxWidth()
-                    ) { Text(context.getString(R.string.settings_button_save)) }
+                    ) { Text("Сохранить") }
 
                     // Known federated servers list
                     if (state.knownServers.isNotEmpty()) {
                         Spacer(Modifier.height(16.dp))
                         Text(
-                            context.getString(R.string.settings_known_servers),
+                            "Серверы сети (нажми чтобы выбрать)",
                             fontSize = 13.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -263,7 +257,6 @@ fun LoginScreen(state: UiState, vm: MessengerViewModel) {
 // ---- Chat screen ----
 @Composable
 fun ChatScreen(state: UiState, vm: MessengerViewModel) {
-    val context = androidx.compose.ui.platform.LocalContext.current
     var msgText by remember { mutableStateOf("") }
     var showSidebar by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
@@ -279,15 +272,15 @@ fun ChatScreen(state: UiState, vm: MessengerViewModel) {
         topBar = {
             @OptIn(ExperimentalMaterial3Api::class)
             TopAppBar(
-                title = { Text(context.getString(R.string.chat_title_general), fontWeight = FontWeight.Bold) },
+                title = { Text("# Общий чат", fontWeight = FontWeight.Bold) },
                 navigationIcon = {
                     IconButton(onClick = { showSidebar = !showSidebar }) {
-                        Icon(Icons.Default.Person, contentDescription = context.getString(R.string.content_description_menu))
+                        Icon(Icons.Default.Person, contentDescription = "Меню")
                     }
                 },
                 actions = {
                     IconButton(onClick = { vm.logout() }) {
-                        Icon(Icons.AutoMirrored.Filled.ExitToApp, contentDescription = context.getString(R.string.content_description_logout))
+                        Icon(Icons.AutoMirrored.Filled.ExitToApp, contentDescription = "Выйти")
                     }
                 }
             )
@@ -308,7 +301,7 @@ fun ChatScreen(state: UiState, vm: MessengerViewModel) {
                     OutlinedTextField(
                         value = msgText,
                         onValueChange = { msgText = it },
-                        placeholder = { Text(context.getString(R.string.chat_input_placeholder)) },
+                        placeholder = { Text("Сообщение...") },
                         modifier = Modifier.weight(1f),
                         maxLines = 4,
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
@@ -321,7 +314,7 @@ fun ChatScreen(state: UiState, vm: MessengerViewModel) {
                         onClick = { vm.sendMessage(msgText); msgText = "" },
                         enabled = msgText.isNotBlank()
                     ) {
-                        Icon(Icons.AutoMirrored.Filled.Send, contentDescription = context.getString(R.string.content_description_send),
+                        Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Отправить",
                             tint = MaterialTheme.colorScheme.primary)
                     }
                 }
@@ -390,7 +383,6 @@ fun MessageBubble(msg: ChatMessage) {
 // ---- Navigation Sidebar ----
 @Composable
 fun NavigationSidebar(state: UiState, vm: MessengerViewModel, onDismiss: () -> Unit) {
-    val context = androidx.compose.ui.platform.LocalContext.current
     var showNewDMDialog by remember { mutableStateOf(false) }
     var showNewRoomDialog by remember { mutableStateOf(false) }
 
@@ -421,7 +413,7 @@ fun NavigationSidebar(state: UiState, vm: MessengerViewModel, onDismiss: () -> U
                 // Global chat
                 item {
                     Text(
-                        context.getString(R.string.sidebar_section_chats),
+                        "Чаты",
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Bold,
@@ -430,7 +422,7 @@ fun NavigationSidebar(state: UiState, vm: MessengerViewModel, onDismiss: () -> U
                 }
                 item {
                     NavigationItem(
-                        text = context.getString(R.string.chat_title_general),
+                        text = "# Общий чат",
                         selected = state.screen == Screen.CHAT,
                         onClick = { vm.switchToGlobalChat(); onDismiss() }
                     )
@@ -446,7 +438,7 @@ fun NavigationSidebar(state: UiState, vm: MessengerViewModel, onDismiss: () -> U
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            context.getString(R.string.sidebar_section_dms),
+                            "Личные сообщения",
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -479,7 +471,7 @@ fun NavigationSidebar(state: UiState, vm: MessengerViewModel, onDismiss: () -> U
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            context.getString(R.string.sidebar_section_rooms),
+                            "Комнаты",
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -506,7 +498,7 @@ fun NavigationSidebar(state: UiState, vm: MessengerViewModel, onDismiss: () -> U
                 // Online users
                 item {
                     Text(
-                        context.getString(R.string.sidebar_section_online, state.onlineUsers.size),
+                        "Онлайн (${state.onlineUsers.size})",
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Bold,
@@ -605,7 +597,6 @@ fun NavigationItem(
 // ---- DM Screen ----
 @Composable
 fun DMScreen(state: UiState, vm: MessengerViewModel) {
-    val context = androidx.compose.ui.platform.LocalContext.current
     var msgText by remember { mutableStateOf("") }
     var showSidebar by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
@@ -625,7 +616,7 @@ fun DMScreen(state: UiState, vm: MessengerViewModel) {
                 title = { Text("💬 ${state.currentDMPartner}", fontWeight = FontWeight.Bold) },
                 navigationIcon = {
                     IconButton(onClick = { showSidebar = !showSidebar }) {
-                        Icon(Icons.Default.Person, contentDescription = context.getString(R.string.content_description_menu))
+                        Icon(Icons.Default.Person, contentDescription = "Меню")
                     }
                 },
                 actions = {
@@ -651,7 +642,7 @@ fun DMScreen(state: UiState, vm: MessengerViewModel) {
                     OutlinedTextField(
                         value = msgText,
                         onValueChange = { msgText = it },
-                        placeholder = { Text(context.getString(R.string.chat_input_placeholder_dm, state.currentDMPartner)) },
+                        placeholder = { Text("Сообщение для ${state.currentDMPartner}...") },
                         modifier = Modifier.weight(1f),
                         maxLines = 4,
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
@@ -664,7 +655,7 @@ fun DMScreen(state: UiState, vm: MessengerViewModel) {
                         onClick = { vm.sendDM(state.currentDMPartner, msgText); msgText = "" },
                         enabled = msgText.isNotBlank()
                     ) {
-                        Icon(Icons.AutoMirrored.Filled.Send, contentDescription = context.getString(R.string.content_description_send),
+                        Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Отправить",
                             tint = MaterialTheme.colorScheme.primary)
                     }
                 }
@@ -692,7 +683,6 @@ fun DMScreen(state: UiState, vm: MessengerViewModel) {
 // ---- Room Screen ----
 @Composable
 fun RoomScreen(state: UiState, vm: MessengerViewModel) {
-    val context = androidx.compose.ui.platform.LocalContext.current
     var msgText by remember { mutableStateOf("") }
     var showSidebar by remember { mutableStateOf(false) }
     var showInviteDialog by remember { mutableStateOf(false) }
@@ -716,7 +706,7 @@ fun RoomScreen(state: UiState, vm: MessengerViewModel) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 CircularProgressIndicator()
                 Spacer(Modifier.height(16.dp))
-                Text(context.getString(R.string.chat_loading_room))
+                Text("Загрузка комнаты...")
             }
         }
         return
@@ -734,7 +724,7 @@ fun RoomScreen(state: UiState, vm: MessengerViewModel) {
                             fontSize = 16.sp
                         )
                         Text(
-                            context.getString(R.string.room_members_count, room.members.size),
+                            "${room.members.size} участников",
                             fontSize = 11.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -742,7 +732,7 @@ fun RoomScreen(state: UiState, vm: MessengerViewModel) {
                 },
                 navigationIcon = {
                     IconButton(onClick = { showSidebar = !showSidebar }) {
-                        Icon(Icons.Default.Person, contentDescription = context.getString(R.string.content_description_menu))
+                        Icon(Icons.Default.Person, contentDescription = "Меню")
                     }
                 },
                 actions = {
@@ -771,7 +761,7 @@ fun RoomScreen(state: UiState, vm: MessengerViewModel) {
                     OutlinedTextField(
                         value = msgText,
                         onValueChange = { msgText = it },
-                        placeholder = { Text(context.getString(R.string.chat_input_placeholder_room)) },
+                        placeholder = { Text("Сообщение в комнату...") },
                         modifier = Modifier.weight(1f),
                         maxLines = 4,
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
@@ -784,7 +774,7 @@ fun RoomScreen(state: UiState, vm: MessengerViewModel) {
                         onClick = { vm.sendRoomMessage(state.currentRoomId, msgText); msgText = "" },
                         enabled = msgText.isNotBlank()
                     ) {
-                        Icon(Icons.AutoMirrored.Filled.Send, contentDescription = context.getString(R.string.content_description_send),
+                        Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Отправить",
                             tint = MaterialTheme.colorScheme.primary)
                     }
                 }
@@ -822,17 +812,16 @@ fun RoomScreen(state: UiState, vm: MessengerViewModel) {
 // ---- Dialogs ----
 @Composable
 fun NewDMDialog(onDismiss: () -> Unit, onConfirm: (String) -> Unit) {
-    val context = androidx.compose.ui.platform.LocalContext.current
     var username by remember { mutableStateOf("") }
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(context.getString(R.string.dm_new_conversation)) },
+        title = { Text("Новое личное сообщение") },
         text = {
             OutlinedTextField(
                 value = username,
                 onValueChange = { username = it },
-                label = { Text(context.getString(R.string.dm_target_user)) },
+                label = { Text("Логин пользователя") },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth()
             )
@@ -842,12 +831,12 @@ fun NewDMDialog(onDismiss: () -> Unit, onConfirm: (String) -> Unit) {
                 onClick = { if (username.isNotBlank()) onConfirm(username) },
                 enabled = username.isNotBlank()
             ) {
-                Text(context.getString(R.string.dm_button_open))
+                Text("Открыть")
             }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) {
-                Text(context.getString(R.string.dm_button_cancel))
+                Text("Отмена")
             }
         }
     )
@@ -855,20 +844,19 @@ fun NewDMDialog(onDismiss: () -> Unit, onConfirm: (String) -> Unit) {
 
 @Composable
 fun NewRoomDialog(onDismiss: () -> Unit, onConfirm: (String, Boolean, String) -> Unit) {
-    val context = androidx.compose.ui.platform.LocalContext.current
     var name by remember { mutableStateOf("") }
     var description by remember { mutableStateOf("") }
     var isPublic by remember { mutableStateOf(false) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(context.getString(R.string.room_create_title)) },
+        title = { Text("Создать комнату") },
         text = {
             Column {
                 OutlinedTextField(
                     value = name,
                     onValueChange = { name = it },
-                    label = { Text(context.getString(R.string.room_name)) },
+                    label = { Text("Название комнаты") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
@@ -876,14 +864,14 @@ fun NewRoomDialog(onDismiss: () -> Unit, onConfirm: (String, Boolean, String) ->
                 OutlinedTextField(
                     value = description,
                     onValueChange = { description = it },
-                    label = { Text(context.getString(R.string.room_description)) },
+                    label = { Text("Описание (необязательно)") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
                 Spacer(Modifier.height(8.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Checkbox(checked = isPublic, onCheckedChange = { isPublic = it })
-                    Text(context.getString(R.string.room_public))
+                    Text("Публичная (видна всем)")
                 }
             }
         },
@@ -892,12 +880,12 @@ fun NewRoomDialog(onDismiss: () -> Unit, onConfirm: (String, Boolean, String) ->
                 onClick = { if (name.isNotBlank()) onConfirm(name, isPublic, description) },
                 enabled = name.isNotBlank()
             ) {
-                Text(context.getString(R.string.room_button_create))
+                Text("Создать")
             }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) {
-                Text(context.getString(R.string.room_button_cancel))
+                Text("Отмена")
             }
         }
     )
@@ -905,17 +893,16 @@ fun NewRoomDialog(onDismiss: () -> Unit, onConfirm: (String, Boolean, String) ->
 
 @Composable
 fun InviteToRoomDialog(onDismiss: () -> Unit, onConfirm: (String) -> Unit) {
-    val context = androidx.compose.ui.platform.LocalContext.current
     var username by remember { mutableStateOf("") }
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(context.getString(R.string.room_invite_title)) },
+        title = { Text("Пригласить в комнату") },
         text = {
             OutlinedTextField(
                 value = username,
                 onValueChange = { username = it },
-                label = { Text(context.getString(R.string.room_invite_username)) },
+                label = { Text("Логин пользователя") },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth()
             )
@@ -925,83 +912,13 @@ fun InviteToRoomDialog(onDismiss: () -> Unit, onConfirm: (String) -> Unit) {
                 onClick = { if (username.isNotBlank()) onConfirm(username) },
                 enabled = username.isNotBlank()
             ) {
-                Text(context.getString(R.string.room_button_invite_ok))
+                Text("Пригласить")
             }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) {
-                Text(context.getString(R.string.room_button_cancel))
+                Text("Отмена")
             }
         }
     )
-}
-
-// ---- Language Selector ----
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun LanguageSelector(context: android.content.Context) {
-    val supportedLanguages = LocaleManager.getSupportedLanguages()
-    val currentLocale = LocaleManager.getCurrentLocale(context)
-    var expanded by remember { mutableStateOf(false) }
-    var selectedLanguage by remember { 
-        mutableStateOf(
-            supportedLanguages.find { it.code == currentLocale.language } 
-                ?: supportedLanguages.first()
-        )
-    }
-
-    Column(modifier = Modifier.fillMaxWidth()) {
-        Text(
-            text = context.getString(R.string.settings_language),
-            fontSize = 14.sp,
-            fontWeight = FontWeight.Medium,
-            modifier = Modifier.padding(bottom = 4.dp)
-        )
-        
-        ExposedDropdownMenuBox(
-            expanded = expanded,
-            onExpandedChange = { expanded = it }
-        ) {
-            OutlinedTextField(
-                value = selectedLanguage.nativeName,
-                onValueChange = {},
-                readOnly = true,
-                label = { Text(context.getString(R.string.settings_language_select)) },
-                trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .menuAnchor(),
-                colors = ExposedDropdownMenuDefaults.outlinedTextFieldColors()
-            )
-            
-            ExposedDropdownMenu(
-                expanded = expanded,
-                onDismissRequest = { expanded = false }
-            ) {
-                supportedLanguages.forEach { language ->
-                    DropdownMenuItem(
-                        text = {
-                            Column {
-                                Text(
-                                    text = language.nativeName,
-                                    fontWeight = FontWeight.Medium
-                                )
-                                Text(
-                                    text = language.displayName,
-                                    fontSize = 12.sp,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        },
-                        onClick = {
-                            selectedLanguage = language
-                            LocaleManager.setLocale(context, language.code)
-                            expanded = false
-                        },
-                        contentPadding = ExposedDropdownMenuDefaults.ItemContentPadding
-                    )
-                }
-            }
-        }
-    }
 }
