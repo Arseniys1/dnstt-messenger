@@ -1,4 +1,4 @@
-package com.example.myapplication
+﻿package com.example.myapplication
 
 import android.Manifest
 import android.content.pm.PackageManager
@@ -92,32 +92,35 @@ fun MessengerApp(vm: MessengerViewModel = viewModel()) {
 
 // ---- Login / Register / Settings screen ----
 @Composable
+@OptIn(ExperimentalMaterial3Api::class)
 fun LoginScreen(state: UiState, vm: MessengerViewModel) {
+    val lang = state.config.language
     var tab by remember { mutableIntStateOf(0) }
     var loginUser by remember { mutableStateOf("") }
     var loginPass by remember { mutableStateOf("") }
-    var regUser   by remember { mutableStateOf("") }
-    var regPass   by remember { mutableStateOf("") }
+    var regUser by remember { mutableStateOf("") }
+    var regPass by remember { mutableStateOf("") }
     var cfgServer by remember { mutableStateOf(state.config.serverAddr) }
-    var cfgProxy  by remember { mutableStateOf(state.config.proxyAddr) }
+    var cfgProxy by remember { mutableStateOf(state.config.proxyAddr) }
     var cfgDirect by remember { mutableStateOf(state.config.directMode) }
+    var cfgLanguage by remember { mutableStateOf(state.config.language) }
+    var languageExpanded by remember { mutableStateOf(false) }
 
     LaunchedEffect(state.config) {
         cfgServer = state.config.serverAddr
-        cfgProxy  = state.config.proxyAddr
+        cfgProxy = state.config.proxyAddr
         cfgDirect = state.config.directMode
+        cfgLanguage = state.config.language
     }
 
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(24.dp),
+            modifier = Modifier.fillMaxSize().padding(24.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center
         ) {
             Text(
-                "🔐 DNSTT Messenger",
+                "DNSTT Messenger",
                 fontSize = 24.sp,
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.primary,
@@ -125,31 +128,29 @@ fun LoginScreen(state: UiState, vm: MessengerViewModel) {
             )
 
             TabRow(selectedTabIndex = tab) {
-                Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text("Вход") })
-                Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("Регистрация") })
-                Tab(selected = tab == 2, onClick = { tab = 2 }, text = { Text("Настройки") })
+                Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text(t(lang, R.string.tab_login)) })
+                Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text(t(lang, R.string.tab_register)) })
+                Tab(selected = tab == 2, onClick = { tab = 2 }, text = { Text(t(lang, R.string.tab_settings)) })
             }
 
             Spacer(Modifier.height(16.dp))
-
             when (tab) {
                 0 -> {
                     OutlinedTextField(
                         value = loginUser, onValueChange = { loginUser = it },
-                        label = { Text("Логин") }, singleLine = true,
+                        label = { Text(t(lang, R.string.label_login)) },
+                        singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next)
                     )
                     Spacer(Modifier.height(8.dp))
                     OutlinedTextField(
                         value = loginPass, onValueChange = { loginPass = it },
-                        label = { Text("Пароль") }, singleLine = true,
+                        label = { Text(t(lang, R.string.label_password)) },
+                        singleLine = true,
                         visualTransformation = PasswordVisualTransformation(),
                         modifier = Modifier.fillMaxWidth(),
-                        keyboardOptions = KeyboardOptions(
-                            keyboardType = KeyboardType.Password,
-                            imeAction = ImeAction.Done
-                        ),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
                         keyboardActions = KeyboardActions(onDone = { vm.login(loginUser, loginPass) })
                     )
                     Spacer(Modifier.height(16.dp))
@@ -159,26 +160,25 @@ fun LoginScreen(state: UiState, vm: MessengerViewModel) {
                         enabled = !state.isLoading
                     ) {
                         if (state.isLoading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                        else Text("Войти")
+                        else Text(t(lang, R.string.action_sign_in))
                     }
                 }
                 1 -> {
                     OutlinedTextField(
                         value = regUser, onValueChange = { regUser = it },
-                        label = { Text("Логин") }, singleLine = true,
+                        label = { Text(t(lang, R.string.label_login)) },
+                        singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next)
                     )
                     Spacer(Modifier.height(8.dp))
                     OutlinedTextField(
                         value = regPass, onValueChange = { regPass = it },
-                        label = { Text("Пароль") }, singleLine = true,
+                        label = { Text(t(lang, R.string.label_password)) },
+                        singleLine = true,
                         visualTransformation = PasswordVisualTransformation(),
                         modifier = Modifier.fillMaxWidth(),
-                        keyboardOptions = KeyboardOptions(
-                            keyboardType = KeyboardType.Password,
-                            imeAction = ImeAction.Done
-                        ),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
                         keyboardActions = KeyboardActions(onDone = { vm.register(regUser, regPass) })
                     )
                     Spacer(Modifier.height(16.dp))
@@ -188,37 +188,74 @@ fun LoginScreen(state: UiState, vm: MessengerViewModel) {
                         enabled = !state.isLoading
                     ) {
                         if (state.isLoading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                        else Text("Зарегистрироваться")
+                        else Text(t(lang, R.string.action_create_account))
                     }
                 }
                 2 -> {
                     OutlinedTextField(
                         value = cfgServer, onValueChange = { cfgServer = it },
-                        label = { Text("Адрес сервера") }, singleLine = true,
+                        label = { Text(t(lang, R.string.label_server_address)) },
+                        singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
                     Spacer(Modifier.height(8.dp))
                     OutlinedTextField(
                         value = cfgProxy, onValueChange = { cfgProxy = it },
-                        label = { Text("SOCKS5 прокси (dnstt)") }, singleLine = true,
+                        label = { Text(t(lang, R.string.label_socks_proxy)) },
+                        singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
                     Spacer(Modifier.height(8.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Checkbox(checked = cfgDirect, onCheckedChange = { cfgDirect = it })
-                        Text("Прямое подключение (без прокси)")
+                        Text(t(lang, R.string.label_direct_connection))
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Text(t(lang, R.string.label_language), fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    ExposedDropdownMenuBox(
+                        expanded = languageExpanded,
+                        onExpandedChange = { languageExpanded = !languageExpanded }
+                    ) {
+                        OutlinedTextField(
+                            value = t(cfgLanguage, if (cfgLanguage == "ru") R.string.lang_russian else R.string.lang_english),
+                            onValueChange = {},
+                            readOnly = true,
+                            singleLine = true,
+                            modifier = Modifier
+                                .menuAnchor()
+                                .fillMaxWidth(),
+                            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = languageExpanded) }
+                        )
+                        ExposedDropdownMenu(
+                            expanded = languageExpanded,
+                            onDismissRequest = { languageExpanded = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text(t(lang, R.string.lang_english)) },
+                                onClick = {
+                                    cfgLanguage = "en"
+                                    languageExpanded = false
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text(t(lang, R.string.lang_russian)) },
+                                onClick = {
+                                    cfgLanguage = "ru"
+                                    languageExpanded = false
+                                }
+                            )
+                        }
                     }
                     Spacer(Modifier.height(16.dp))
                     Button(
-                        onClick = { vm.saveConfig(AppConfig(cfgServer, cfgProxy, cfgDirect)) },
+                        onClick = { vm.saveConfig(AppConfig(cfgServer, cfgProxy, cfgDirect, cfgLanguage)) },
                         modifier = Modifier.fillMaxWidth()
-                    ) { Text("Сохранить") }
+                    ) { Text(t(lang, R.string.action_save)) }
 
-                    // Known federated servers list
                     if (state.knownServers.isNotEmpty()) {
                         Spacer(Modifier.height(16.dp))
                         Text(
-                            "Серверы сети (нажми чтобы выбрать)",
+                            t(lang, R.string.label_network_servers),
                             fontSize = 13.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -228,11 +265,9 @@ fun LoginScreen(state: UiState, vm: MessengerViewModel) {
                                 onClick = {
                                     cfgServer = addr
                                     cfgDirect = true
-                                    vm.saveConfig(AppConfig(addr, cfgProxy, true))
+                                    vm.saveConfig(AppConfig(addr, cfgProxy, true, cfgLanguage))
                                 },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(vertical = 2.dp)
+                                modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)
                             ) {
                                 Text(addr, fontSize = 13.sp, maxLines = 1)
                             }
@@ -245,8 +280,7 @@ fun LoginScreen(state: UiState, vm: MessengerViewModel) {
                 Spacer(Modifier.height(12.dp))
                 Text(
                     state.status,
-                    color = if (state.isError) MaterialTheme.colorScheme.error
-                            else MaterialTheme.colorScheme.primary,
+                    color = if (state.isError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
                     fontSize = 14.sp
                 )
             }
@@ -272,15 +306,18 @@ fun ChatScreen(state: UiState, vm: MessengerViewModel) {
         topBar = {
             @OptIn(ExperimentalMaterial3Api::class)
             TopAppBar(
-                title = { Text("# Общий чат", fontWeight = FontWeight.Bold) },
+                title = { Text(t(state.config.language, R.string.chat_general_title), fontWeight = FontWeight.Bold) },
                 navigationIcon = {
                     IconButton(onClick = { showSidebar = !showSidebar }) {
-                        Icon(Icons.Default.Person, contentDescription = "Меню")
+                        Icon(Icons.Default.Person, contentDescription = t(state.config.language, R.string.content_menu))
                     }
                 },
                 actions = {
                     IconButton(onClick = { vm.logout() }) {
-                        Icon(Icons.AutoMirrored.Filled.ExitToApp, contentDescription = "Выйти")
+                        Icon(
+                            Icons.AutoMirrored.Filled.ExitToApp,
+                            contentDescription = t(state.config.language, R.string.content_logout)
+                        )
                     }
                 }
             )
@@ -301,7 +338,7 @@ fun ChatScreen(state: UiState, vm: MessengerViewModel) {
                     OutlinedTextField(
                         value = msgText,
                         onValueChange = { msgText = it },
-                        placeholder = { Text("Сообщение...") },
+                        placeholder = { Text(t(state.config.language, R.string.placeholder_message)) },
                         modifier = Modifier.weight(1f),
                         maxLines = 4,
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
@@ -314,7 +351,7 @@ fun ChatScreen(state: UiState, vm: MessengerViewModel) {
                         onClick = { vm.sendMessage(msgText); msgText = "" },
                         enabled = msgText.isNotBlank()
                     ) {
-                        Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Отправить",
+                        Icon(Icons.AutoMirrored.Filled.Send, contentDescription = t(state.config.language, R.string.content_send),
                             tint = MaterialTheme.colorScheme.primary)
                     }
                 }
@@ -413,7 +450,7 @@ fun NavigationSidebar(state: UiState, vm: MessengerViewModel, onDismiss: () -> U
                 // Global chat
                 item {
                     Text(
-                        "Чаты",
+                        t(state.config.language, R.string.label_chats),
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Bold,
@@ -422,7 +459,7 @@ fun NavigationSidebar(state: UiState, vm: MessengerViewModel, onDismiss: () -> U
                 }
                 item {
                     NavigationItem(
-                        text = "# Общий чат",
+                        text = t(state.config.language, R.string.label_global_chat),
                         selected = state.screen == Screen.CHAT,
                         onClick = { vm.switchToGlobalChat(); onDismiss() }
                     )
@@ -438,7 +475,7 @@ fun NavigationSidebar(state: UiState, vm: MessengerViewModel, onDismiss: () -> U
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            "Личные сообщения",
+                            t(state.config.language, R.string.label_direct_messages),
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -471,7 +508,7 @@ fun NavigationSidebar(state: UiState, vm: MessengerViewModel, onDismiss: () -> U
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            "Комнаты",
+                            t(state.config.language, R.string.label_rooms),
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -498,7 +535,7 @@ fun NavigationSidebar(state: UiState, vm: MessengerViewModel, onDismiss: () -> U
                 // Online users
                 item {
                     Text(
-                        "Онлайн (${state.onlineUsers.size})",
+                        t(state.config.language, R.string.label_online_count, state.onlineUsers.size),
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Bold,
@@ -527,6 +564,7 @@ fun NavigationSidebar(state: UiState, vm: MessengerViewModel, onDismiss: () -> U
 
     if (showNewDMDialog) {
         NewDMDialog(
+            lang = state.config.language,
             onDismiss = { showNewDMDialog = false },
             onConfirm = { username ->
                 vm.switchToDM(username)
@@ -538,6 +576,7 @@ fun NavigationSidebar(state: UiState, vm: MessengerViewModel, onDismiss: () -> U
 
     if (showNewRoomDialog) {
         NewRoomDialog(
+            lang = state.config.language,
             onDismiss = { showNewRoomDialog = false },
             onConfirm = { name, isPublic, description ->
                 vm.createRoom(name, isPublic, description)
@@ -613,10 +652,10 @@ fun DMScreen(state: UiState, vm: MessengerViewModel) {
         topBar = {
             @OptIn(ExperimentalMaterial3Api::class)
             TopAppBar(
-                title = { Text("💬 ${state.currentDMPartner}", fontWeight = FontWeight.Bold) },
+                title = { Text(t(state.config.language, R.string.title_dm, state.currentDMPartner), fontWeight = FontWeight.Bold) },
                 navigationIcon = {
                     IconButton(onClick = { showSidebar = !showSidebar }) {
-                        Icon(Icons.Default.Person, contentDescription = "Меню")
+                        Icon(Icons.Default.Person, contentDescription = t(state.config.language, R.string.content_menu))
                     }
                 },
                 actions = {
@@ -642,7 +681,7 @@ fun DMScreen(state: UiState, vm: MessengerViewModel) {
                     OutlinedTextField(
                         value = msgText,
                         onValueChange = { msgText = it },
-                        placeholder = { Text("Сообщение для ${state.currentDMPartner}...") },
+                        placeholder = { Text(t(state.config.language, R.string.placeholder_dm_message, state.currentDMPartner)) },
                         modifier = Modifier.weight(1f),
                         maxLines = 4,
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
@@ -655,7 +694,7 @@ fun DMScreen(state: UiState, vm: MessengerViewModel) {
                         onClick = { vm.sendDM(state.currentDMPartner, msgText); msgText = "" },
                         enabled = msgText.isNotBlank()
                     ) {
-                        Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Отправить",
+                        Icon(Icons.AutoMirrored.Filled.Send, contentDescription = t(state.config.language, R.string.content_send),
                             tint = MaterialTheme.colorScheme.primary)
                     }
                 }
@@ -706,7 +745,7 @@ fun RoomScreen(state: UiState, vm: MessengerViewModel) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 CircularProgressIndicator()
                 Spacer(Modifier.height(16.dp))
-                Text("Загрузка комнаты...")
+                Text(t(state.config.language, R.string.text_loading_room))
             }
         }
         return
@@ -724,7 +763,7 @@ fun RoomScreen(state: UiState, vm: MessengerViewModel) {
                             fontSize = 16.sp
                         )
                         Text(
-                            "${room.members.size} участников",
+                            t(state.config.language, R.string.label_members_count, room.members.size),
                             fontSize = 11.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -732,7 +771,7 @@ fun RoomScreen(state: UiState, vm: MessengerViewModel) {
                 },
                 navigationIcon = {
                     IconButton(onClick = { showSidebar = !showSidebar }) {
-                        Icon(Icons.Default.Person, contentDescription = "Меню")
+                        Icon(Icons.Default.Person, contentDescription = t(state.config.language, R.string.content_menu))
                     }
                 },
                 actions = {
@@ -761,7 +800,7 @@ fun RoomScreen(state: UiState, vm: MessengerViewModel) {
                     OutlinedTextField(
                         value = msgText,
                         onValueChange = { msgText = it },
-                        placeholder = { Text("Сообщение в комнату...") },
+                        placeholder = { Text(t(state.config.language, R.string.placeholder_room_message)) },
                         modifier = Modifier.weight(1f),
                         maxLines = 4,
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
@@ -774,7 +813,7 @@ fun RoomScreen(state: UiState, vm: MessengerViewModel) {
                         onClick = { vm.sendRoomMessage(state.currentRoomId, msgText); msgText = "" },
                         enabled = msgText.isNotBlank()
                     ) {
-                        Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Отправить",
+                        Icon(Icons.AutoMirrored.Filled.Send, contentDescription = t(state.config.language, R.string.content_send),
                             tint = MaterialTheme.colorScheme.primary)
                     }
                 }
@@ -800,6 +839,7 @@ fun RoomScreen(state: UiState, vm: MessengerViewModel) {
 
     if (showInviteDialog) {
         InviteToRoomDialog(
+            lang = state.config.language,
             onDismiss = { showInviteDialog = false },
             onConfirm = { username ->
                 vm.inviteToRoom(state.currentRoomId, username)
@@ -811,17 +851,17 @@ fun RoomScreen(state: UiState, vm: MessengerViewModel) {
 
 // ---- Dialogs ----
 @Composable
-fun NewDMDialog(onDismiss: () -> Unit, onConfirm: (String) -> Unit) {
+fun NewDMDialog(lang: String, onDismiss: () -> Unit, onConfirm: (String) -> Unit) {
     var username by remember { mutableStateOf("") }
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Новое личное сообщение") },
+        title = { Text(t(lang, R.string.title_new_dm)) },
         text = {
             OutlinedTextField(
                 value = username,
                 onValueChange = { username = it },
-                label = { Text("Логин пользователя") },
+                label = { Text(t(lang, R.string.label_user_login)) },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth()
             )
@@ -831,32 +871,32 @@ fun NewDMDialog(onDismiss: () -> Unit, onConfirm: (String) -> Unit) {
                 onClick = { if (username.isNotBlank()) onConfirm(username) },
                 enabled = username.isNotBlank()
             ) {
-                Text("Открыть")
+                Text(t(lang, R.string.action_open))
             }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) {
-                Text("Отмена")
+                Text(t(lang, R.string.action_cancel))
             }
         }
     )
 }
 
 @Composable
-fun NewRoomDialog(onDismiss: () -> Unit, onConfirm: (String, Boolean, String) -> Unit) {
+fun NewRoomDialog(lang: String, onDismiss: () -> Unit, onConfirm: (String, Boolean, String) -> Unit) {
     var name by remember { mutableStateOf("") }
     var description by remember { mutableStateOf("") }
     var isPublic by remember { mutableStateOf(false) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Создать комнату") },
+        title = { Text(t(lang, R.string.title_create_room)) },
         text = {
             Column {
                 OutlinedTextField(
                     value = name,
                     onValueChange = { name = it },
-                    label = { Text("Название комнаты") },
+                    label = { Text(t(lang, R.string.label_room_name)) },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
@@ -864,14 +904,14 @@ fun NewRoomDialog(onDismiss: () -> Unit, onConfirm: (String, Boolean, String) ->
                 OutlinedTextField(
                     value = description,
                     onValueChange = { description = it },
-                    label = { Text("Описание (необязательно)") },
+                    label = { Text(t(lang, R.string.label_description_optional)) },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
                 Spacer(Modifier.height(8.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Checkbox(checked = isPublic, onCheckedChange = { isPublic = it })
-                    Text("Публичная (видна всем)")
+                    Text(t(lang, R.string.label_room_public))
                 }
             }
         },
@@ -880,29 +920,29 @@ fun NewRoomDialog(onDismiss: () -> Unit, onConfirm: (String, Boolean, String) ->
                 onClick = { if (name.isNotBlank()) onConfirm(name, isPublic, description) },
                 enabled = name.isNotBlank()
             ) {
-                Text("Создать")
+                Text(t(lang, R.string.action_create))
             }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) {
-                Text("Отмена")
+                Text(t(lang, R.string.action_cancel))
             }
         }
     )
 }
 
 @Composable
-fun InviteToRoomDialog(onDismiss: () -> Unit, onConfirm: (String) -> Unit) {
+fun InviteToRoomDialog(lang: String, onDismiss: () -> Unit, onConfirm: (String) -> Unit) {
     var username by remember { mutableStateOf("") }
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Пригласить в комнату") },
+        title = { Text(t(lang, R.string.title_invite_room)) },
         text = {
             OutlinedTextField(
                 value = username,
                 onValueChange = { username = it },
-                label = { Text("Логин пользователя") },
+                label = { Text(t(lang, R.string.label_user_login)) },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth()
             )
@@ -912,13 +952,14 @@ fun InviteToRoomDialog(onDismiss: () -> Unit, onConfirm: (String) -> Unit) {
                 onClick = { if (username.isNotBlank()) onConfirm(username) },
                 enabled = username.isNotBlank()
             ) {
-                Text("Пригласить")
+                Text(t(lang, R.string.action_invite))
             }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) {
-                Text("Отмена")
+                Text(t(lang, R.string.action_cancel))
             }
         }
     )
 }
+

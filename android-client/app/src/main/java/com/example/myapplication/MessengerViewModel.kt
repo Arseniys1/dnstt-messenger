@@ -7,6 +7,7 @@ import android.content.Intent
 import android.content.ServiceConnection
 import android.os.Build
 import android.os.IBinder
+import androidx.annotation.StringRes
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.launch
@@ -98,7 +99,8 @@ class MessengerViewModel(app: Application) : AndroidViewModel(app) {
             AppConfig(
                 serverAddr = j.optString("server_addr", "94.103.169.82:9999"),
                 proxyAddr  = j.optString("proxy_addr",  "127.0.0.1:18000"),
-                directMode = j.optBoolean("direct_mode", false)
+                directMode = j.optBoolean("direct_mode", false),
+                language   = j.optString("language", "en")
             )
         } catch (_: Exception) { AppConfig() }
     }
@@ -108,30 +110,37 @@ class MessengerViewModel(app: Application) : AndroidViewModel(app) {
         j.put("server_addr", cfg.serverAddr)
         j.put("proxy_addr",  cfg.proxyAddr)
         j.put("direct_mode", cfg.directMode)
+        j.put("language",    cfg.language)
         prefs.edit().putString("config", j.toString()).apply()
         _state.value = _state.value.copy(config = cfg)
+    }
+
+    private fun status(@StringRes resId: Int, vararg args: Any): String {
+        val lang = normalizeLanguage(_state.value.config.language)
+        val app = getApplication<Application>()
+        return localizedString(app, lang, resId, *args)
     }
 
     // ---- Register ----
     fun register(login: String, pass: String) {
         if (login.isBlank() || pass.isBlank()) {
-            setStatus("Заполните все поля", error = true); return
+            setStatus(status(R.string.status_fill_fields), error = true); return
         }
         viewModelScope.launch {
-            setStatus("Подключение...", loading = true)
+            setStatus(status(R.string.status_connecting), loading = true)
             val c = MessengerClient()
             val connResult = withTimeoutOrNull(12_000) { c.connect(_state.value.config) }
             if (connResult == null || connResult.isFailure) {
                 c.destroy()
-                setStatus("Ошибка подключения: ${connResult?.exceptionOrNull()?.message ?: "таймаут"}", error = true)
+                setStatus(status(R.string.status_connection_error, connResult?.exceptionOrNull()?.message ?: "timeout"), error = true)
                 return@launch
             }
             val regResult = withTimeoutOrNull(6_000) { c.register(login, pass) }
             c.destroy()
             when {
-                regResult == null -> setStatus("Таймаут регистрации", error = true)
-                regResult.getOrNull() == true -> setStatus("Аккаунт создан! Теперь войдите.")
-                else -> setStatus("Логин уже занят", error = true)
+                regResult == null -> setStatus(status(R.string.status_registration_timeout), error = true)
+                regResult.getOrNull() == true -> setStatus(status(R.string.status_account_created))
+                else -> setStatus(status(R.string.status_login_taken), error = true)
             }
         }
     }
@@ -139,37 +148,37 @@ class MessengerViewModel(app: Application) : AndroidViewModel(app) {
     // ---- Login ----
     fun login(login: String, pass: String) {
         if (login.isBlank() || pass.isBlank()) {
-            setStatus("Заполните все поля", error = true); return
+            setStatus(status(R.string.status_fill_fields), error = true); return
         }
         viewModelScope.launch {
             // Wait up to 3s for service to bind
             val svc = waitForService() ?: run {
-                setStatus("Сервис не готов, попробуйте снова", error = true); return@launch
+                setStatus(status(R.string.status_service_not_ready), error = true); return@launch
             }
 
-            // Clear previous session state before connecting — avoids the race where
+            // Clear previous session state before connecting - avoids the race where
             // OnlineList/History events arrive and are processed by handleEvent BEFORE
             // the login-success block runs, causing them to be wiped by emptyList().
             _state.value = _state.value.copy(
                 messages = emptyList(),
                 onlineUsers = emptyList(),
-                status = "Подключение...",
+                status = status(R.string.status_connecting),
                 isLoading = true,
                 isError = false
             )
             val connResult = withTimeoutOrNull(12_000) { svc.connect(_state.value.config) }
             if (connResult == null || connResult.isFailure) {
-                setStatus("Ошибка подключения: ${connResult?.exceptionOrNull()?.message ?: "таймаут"}", error = true)
+                setStatus(status(R.string.status_connection_error, connResult?.exceptionOrNull()?.message ?: "timeout"), error = true)
                 return@launch
             }
 
-            setStatus("Авторизация...", loading = true)
+            setStatus(status(R.string.status_authenticating), loading = true)
             // login() has its own 8s timeout internally
             val loginResult = svc.login(login, pass)
             if (loginResult.isFailure) {
                 val msg = loginResult.exceptionOrNull()?.message ?: ""
-                val text = if (msg == "Invalid credentials") "Неверный логин или пароль"
-                           else "Ошибка входа: $msg"
+                val text = if (msg == "Invalid credentials") status(R.string.status_invalid_credentials)
+                           else status(R.string.status_login_error, msg)
                 setStatus(text, error = true)
                 return@launch
             }
@@ -368,7 +377,7 @@ class MessengerViewModel(app: Application) : AndroidViewModel(app) {
                 if (_state.value.screen == Screen.CHAT) {
                     _state.value = _state.value.copy(
                         screen = Screen.LOGIN,
-                        status = "Соединение разорвано",
+                        status = status(R.string.status_connection_lost),
                         isError = true,
                         isLoading = false,
                         messages = emptyList(),

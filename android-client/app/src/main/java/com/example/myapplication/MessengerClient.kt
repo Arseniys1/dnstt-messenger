@@ -72,7 +72,8 @@ private const val MAX_FRAME_SIZE = 180
 data class AppConfig(
     val serverAddr: String  = "94.103.169.82:9999",
     val proxyAddr:  String  = "127.0.0.1:18000",
-    val directMode: Boolean = false
+    val directMode: Boolean = false,
+    val language:   String  = "en"
 )
 
 data class ChatMessage(

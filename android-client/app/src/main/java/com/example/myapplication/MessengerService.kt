@@ -5,9 +5,14 @@ import android.content.Context
 import android.content.Intent
 import android.os.Binder
 import android.os.IBinder
-import kotlinx.coroutines.*
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.launch
 
 class MessengerService : Service() {
 
@@ -95,8 +100,8 @@ class MessengerService : Service() {
     private fun buildServiceNotification() =
         androidx.core.app.NotificationCompat.Builder(this, Notifications.SERVICE_CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_dialog_email)
-            .setContentTitle("DNSTT Messenger")
-            .setContentText("Подключено")
+            .setContentTitle(getString(R.string.app_name))
+            .setContentText(localizedString(this, readSavedLanguage(this), R.string.notif_service_connected))
             .setPriority(androidx.core.app.NotificationCompat.PRIORITY_LOW)
             .setOngoing(true)
             .build()

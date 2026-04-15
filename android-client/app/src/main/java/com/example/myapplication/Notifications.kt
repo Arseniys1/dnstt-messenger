@@ -8,20 +8,31 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 
 object Notifications {
-    const val SERVICE_CHANNEL_ID = "service"
-    private const val MSG_CHANNEL_ID = "messages"
+    const val SERVICE_CHANNEL_ID = "service_v2"
+    private const val MSG_CHANNEL_ID = "messages_v2"
     private var notifId = 10 // start from 10 to avoid collision with service notif
 
     fun createChannel(context: Context) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val nm = context.getSystemService(NotificationManager::class.java)
+            val lang = readSavedLanguage(context)
             nm.createNotificationChannel(
-                NotificationChannel(MSG_CHANNEL_ID, "Сообщения", NotificationManager.IMPORTANCE_HIGH)
-                    .apply { description = "Входящие сообщения" }
+                NotificationChannel(
+                    MSG_CHANNEL_ID,
+                    localizedString(context, lang, R.string.notif_channel_messages_name),
+                    NotificationManager.IMPORTANCE_HIGH
+                ).apply {
+                    description = localizedString(context, lang, R.string.notif_channel_messages_desc)
+                }
             )
             nm.createNotificationChannel(
-                NotificationChannel(SERVICE_CHANNEL_ID, "Фоновое соединение", NotificationManager.IMPORTANCE_LOW)
-                    .apply { description = "Поддержание соединения с сервером" }
+                NotificationChannel(
+                    SERVICE_CHANNEL_ID,
+                    localizedString(context, lang, R.string.notif_channel_service_name),
+                    NotificationManager.IMPORTANCE_LOW
+                ).apply {
+                    description = localizedString(context, lang, R.string.notif_channel_service_desc)
+                }
             )
         }
     }

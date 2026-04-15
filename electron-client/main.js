@@ -12,7 +12,8 @@ function loadConfig() {
   const defaults = {
     proxy_addr: '127.0.0.1:18000',
     server_addr: '127.0.0.1:9999',
-    direct_mode: false
+    direct_mode: false,
+    language: 'en',
   };
   try {
     return { ...defaults, ...JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')) };
@@ -65,7 +66,7 @@ ipcMain.handle('connect', async (_, cfg) => {
     if (win.isMinimized() || !win.isVisible()) {
       new Notification({
         title: sender,
-        body: text.length > 100 ? text.slice(0, 100) + '…' : text
+        body: text.length > 100 ? text.slice(0, 100) + '...' : text
       }).show();
     }
   });
@@ -88,7 +89,7 @@ ipcMain.handle('connect', async (_, cfg) => {
   client.on('dm', (data) => {
     win.webContents.send('dm', data);
     if (win.isMinimized() || !win.isVisible()) {
-      new Notification({ title: `💬 ${data.sender}`, body: data.text.length > 100 ? data.text.slice(0, 100) + '…' : data.text }).show();
+      new Notification({ title: `DM ${data.sender}`, body: data.text.length > 100 ? data.text.slice(0, 100) + '...' : data.text }).show();
     }
   });
   client.on('dm-history', (data) => { win.webContents.send('dm-history', data); });
@@ -101,8 +102,8 @@ ipcMain.handle('connect', async (_, cfg) => {
     win.webContents.send('room-message', data);
     if (win.isMinimized() || !win.isVisible()) {
       const room = client._rooms.get(data.roomID);
-      const title = room ? `#${room.name}` : `Room`;
-      new Notification({ title: `${title} · ${data.sender}`, body: data.text.length > 100 ? data.text.slice(0, 100) + '…' : data.text }).show();
+      const title = room ? `#${room.name}` : 'Room';
+      new Notification({ title: `${title} · ${data.sender}`, body: data.text.length > 100 ? data.text.slice(0, 100) + '...' : data.text }).show();
     }
   });
   client.on('room-history', (data) => { win.webContents.send('room-history', data); });
