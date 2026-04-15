@@ -95,6 +95,14 @@ fun MessengerApp(vm: MessengerViewModel = viewModel()) {
 @OptIn(ExperimentalMaterial3Api::class)
 fun LoginScreen(state: UiState, vm: MessengerViewModel) {
     val lang = state.config.language
+    data class LanguageOption(val code: String, val labelRes: Int)
+    val languageOptions = listOf(
+        LanguageOption("en", R.string.lang_english),
+        LanguageOption("ru", R.string.lang_russian),
+        LanguageOption("zh", R.string.lang_chinese_simplified),
+        LanguageOption("fa", R.string.lang_persian),
+        LanguageOption("tr", R.string.lang_turkish)
+    )
     var tab by remember { mutableIntStateOf(0) }
     var loginUser by remember { mutableStateOf("") }
     var loginPass by remember { mutableStateOf("") }
@@ -216,8 +224,9 @@ fun LoginScreen(state: UiState, vm: MessengerViewModel) {
                         expanded = languageExpanded,
                         onExpandedChange = { languageExpanded = !languageExpanded }
                     ) {
+                        val selectedLanguage = languageOptions.firstOrNull { it.code == cfgLanguage } ?: languageOptions.first()
                         OutlinedTextField(
-                            value = t(cfgLanguage, if (cfgLanguage == "ru") R.string.lang_russian else R.string.lang_english),
+                            value = t(lang, selectedLanguage.labelRes),
                             onValueChange = {},
                             readOnly = true,
                             singleLine = true,
@@ -230,20 +239,15 @@ fun LoginScreen(state: UiState, vm: MessengerViewModel) {
                             expanded = languageExpanded,
                             onDismissRequest = { languageExpanded = false }
                         ) {
-                            DropdownMenuItem(
-                                text = { Text(t(lang, R.string.lang_english)) },
-                                onClick = {
-                                    cfgLanguage = "en"
-                                    languageExpanded = false
-                                }
-                            )
-                            DropdownMenuItem(
-                                text = { Text(t(lang, R.string.lang_russian)) },
-                                onClick = {
-                                    cfgLanguage = "ru"
-                                    languageExpanded = false
-                                }
-                            )
+                            languageOptions.forEach { option ->
+                                DropdownMenuItem(
+                                    text = { Text(t(lang, option.labelRes)) },
+                                    onClick = {
+                                        cfgLanguage = option.code
+                                        languageExpanded = false
+                                    }
+                                )
+                            }
                         }
                     }
                     Spacer(Modifier.height(16.dp))

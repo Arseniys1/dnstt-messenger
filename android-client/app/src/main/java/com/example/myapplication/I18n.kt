@@ -8,7 +8,13 @@ import androidx.compose.ui.platform.LocalContext
 import org.json.JSONObject
 import java.util.Locale
 
-fun normalizeLanguage(language: String?): String = if (language == "ru") "ru" else "en"
+private val supportedLanguages = setOf("en", "ru", "zh", "fa", "tr")
+
+fun normalizeLanguage(language: String?): String {
+    val raw = language?.trim()?.lowercase(Locale.ROOT) ?: return "en"
+    val base = raw.substringBefore('-').substringBefore('_')
+    return if (base in supportedLanguages) base else "en"
+}
 
 fun localizedContext(base: Context, language: String): Context {
     val locale = Locale(normalizeLanguage(language))

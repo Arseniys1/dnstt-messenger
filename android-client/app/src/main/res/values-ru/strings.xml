@@ -13,6 +13,9 @@
     <string name="label_language">Язык</string>
     <string name="lang_english">English</string>
     <string name="lang_russian">Русский</string>
+    <string name="lang_chinese_simplified">Китайский (упрощённый)</string>
+    <string name="lang_persian">Персидский</string>
+    <string name="lang_turkish">Турецкий</string>
     <string name="action_save">Сохранить</string>
     <string name="label_network_servers">Серверы сети (нажми чтобы выбрать)</string>
     <string name="chat_general_title"># Общий чат</string>

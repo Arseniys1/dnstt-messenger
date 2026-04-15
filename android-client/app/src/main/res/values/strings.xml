@@ -13,6 +13,9 @@
     <string name="label_language">Language</string>
     <string name="lang_english">English</string>
     <string name="lang_russian">Russian</string>
+    <string name="lang_chinese_simplified">Chinese (Simplified)</string>
+    <string name="lang_persian">Persian</string>
+    <string name="lang_turkish">Turkish</string>
     <string name="action_save">Save</string>
     <string name="label_network_servers">Network servers (tap to use)</string>
     <string name="chat_general_title"># General chat</string>
