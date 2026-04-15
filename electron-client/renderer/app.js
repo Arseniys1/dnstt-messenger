@@ -4,13 +4,13 @@
 // I18n is exposed via preload.js through window.i18n
 
 // Initialize i18n on load
-(async () => {
+document.addEventListener('DOMContentLoaded', async () => {
   // Load saved language preference from config
   const cfg = await window.api.getConfig();
   await window.i18n.initialize(cfg.language);
   populateLanguageSelector();
   updateUILanguage();
-})();
+});
 
 // Helper function to translate
 function t(key, params = {}) {
@@ -31,10 +31,16 @@ function setTextDirection(languageCode) {
  */
 function populateLanguageSelector() {
   const languageSelect = document.getElementById('cfg-language');
-  if (!languageSelect) return;
+  if (!languageSelect) {
+    console.error('Language selector element not found');
+    return;
+  }
   
   const supportedLanguages = window.i18n.getSupportedLanguages();
   const currentLanguage = window.i18n.getCurrentLanguage();
+  
+  console.log('Populating language selector with', supportedLanguages.length, 'languages');
+  console.log('Current language:', currentLanguage);
   
   // Clear existing options
   languageSelect.innerHTML = '';
@@ -49,6 +55,8 @@ function populateLanguageSelector() {
     }
     languageSelect.appendChild(option);
   });
+  
+  console.log('Language selector populated with', languageSelect.options.length, 'options');
   
   // Add change event listener
   languageSelect.addEventListener('change', handleLanguageChange);
@@ -262,16 +270,15 @@ document.querySelectorAll('.tab').forEach(btn => {
 });
 
 // ─── Load / save config ──────────────────────────────────────────────────────
-window.api.getConfig().then(cfg => {
-  document.getElementById('cfg-server').value   = cfg.server_addr  || '';
-  document.getElementById('cfg-proxy').value    = cfg.proxy_addr   || '';
-  document.getElementById('cfg-direct').checked = !!cfg.direct_mode;
-  
-  // Set language selector value if available
-  const languageSelect = document.getElementById('cfg-language');
-  if (languageSelect && cfg.language) {
-    languageSelect.value = cfg.language;
-  }
+document.addEventListener('DOMContentLoaded', () => {
+  window.api.getConfig().then(cfg => {
+    document.getElementById('cfg-server').value   = cfg.server_addr  || '';
+    document.getElementById('cfg-proxy').value    = cfg.proxy_addr   || '';
+    document.getElementById('cfg-direct').checked = !!cfg.direct_mode;
+    
+    // Language selector will be populated by the i18n initialization above
+    // No need to set it here as it's handled in populateLanguageSelector
+  });
 });
 
 document.getElementById('btn-save-cfg').addEventListener('click', async () => {
