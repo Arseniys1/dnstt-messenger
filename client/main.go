@@ -29,11 +29,11 @@ type Config struct {
 }
 
 var (
-	cfg          Config
-	sessionID    uint16
-	myLogin      string // set after successful login
-	conn         net.Conn
-	sharedKey    []byte
+	cfg            Config
+	sessionID      uint16
+	myLogin        string // set after successful login
+	conn           net.Conn
+	sharedKey      []byte
 	fragCounter    atomic.Uint64
 	sidNamesMu     sync.RWMutex
 	sidNames       = make(map[uint16]string) // SID → username
@@ -53,8 +53,8 @@ var (
 	pendingMessages []string
 
 	// Room state: id → name, id → member logins
-	roomsMu    sync.RWMutex
-	rooms      = make(map[uint32]string)   // roomID → name
+	roomsMu        sync.RWMutex
+	rooms          = make(map[uint32]string)   // roomID → name
 	roomMembersMap = make(map[uint32][]string) // roomID → []login
 )
 
@@ -330,7 +330,20 @@ func writeFrame(c net.Conn, cmd byte, payload []byte) {
 	binary.LittleEndian.PutUint16(frame[0:2], uint16(total))
 	frame[2] = cmd
 	copy(frame[3:], payload)
-	c.Write(frame) //nolint:errcheck
+	if err := writeAll(c, frame); err != nil {
+		fmt.Printf("⚠️ Ошибка отправки кадра cmd=0x%02X: %v\n", cmd, err)
+	}
+}
+
+func writeAll(c net.Conn, b []byte) error {
+	for len(b) > 0 {
+		n, err := c.Write(b)
+		if err != nil {
+			return err
+		}
+		b = b[n:]
+	}
+	return nil
 }
 
 // readOneFrame reads exactly one framed message (blocking until complete).
@@ -552,8 +565,8 @@ func sendFragmented(cmd byte, payload []byte) {
 	// Prepend cmd byte so server's handleFragment can route
 	full := append([]byte{cmd}, payload...)
 
-	msgID := byte(fragCounter.Add(1))
-	maxChunk := maxFrame - 6 // 2(len) + 1(CmdFragment) + 3(msgID, fragIdx, fragCount)
+	msgID := uint32(fragCounter.Add(1))
+	maxChunk := maxFrame - 9 // 2(len) + 1(CmdFragment) + 6(msgID32, fragIdx, fragCount)
 	if maxChunk < 1 {
 		maxChunk = 100
 	}
@@ -576,11 +589,11 @@ func sendFragmented(cmd byte, payload []byte) {
 
 	fragCount := byte(len(chunks))
 	for i, chunk := range chunks {
-		fp := make([]byte, 3+len(chunk))
-		fp[0] = msgID
-		fp[1] = byte(i)
-		fp[2] = fragCount
-		copy(fp[3:], chunk)
+		fp := make([]byte, 6+len(chunk))
+		binary.LittleEndian.PutUint32(fp[0:4], msgID)
+		fp[4] = byte(i)
+		fp[5] = fragCount
+		copy(fp[6:], chunk)
 		writeFrame(conn, CmdFragment, fp)
 	}
 }

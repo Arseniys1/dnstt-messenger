@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
@@ -21,18 +22,18 @@ type Config struct {
 	DBPath             string   `json:"db_path"`
 	HistoryLimit       int      `json:"history_limit"`
 	MaxFrameSize       int      `json:"max_frame_size"`
-	S2SAddr            string   `json:"s2s_addr"`            // server-to-server gossip listen addr
-	PublicAddr         string   `json:"public_addr"`         // client-facing external addr
-	GossipEnabled      bool     `json:"gossip_enabled"`      // default true
-	GossipIntervalSec  int      `json:"gossip_interval_sec"` // default 60
-	InitialPeers       []string `json:"peers"`               // s2s addrs of seed servers
-	S2SSecret          string   `json:"s2s_secret"`          // HMAC secret for S2S relay auth
+	S2SAddr            string   `json:"s2s_addr"`             // server-to-server gossip listen addr
+	PublicAddr         string   `json:"public_addr"`          // client-facing external addr
+	GossipEnabled      bool     `json:"gossip_enabled"`       // default true
+	GossipIntervalSec  int      `json:"gossip_interval_sec"`  // default 60
+	InitialPeers       []string `json:"peers"`                // s2s addrs of seed servers
+	S2SSecret          string   `json:"s2s_secret"`           // HMAC secret for S2S relay auth
 	FederationSyncDays int      `json:"federation_sync_days"` // how many days back to sync (default 7)
 }
 
 const (
-	CmdRegister     = 0x01
-	CmdLogin        = 0x02
+	CmdRegister = 0x01
+	CmdLogin    = 0x02
 	// 0x03-0x05 retired (plaintext CmdMsg/CmdIncoming/CmdHistory removed)
 	CmdAck          = 0x06
 	CmdHistoryEnd   = 0x07
@@ -79,14 +80,15 @@ type clientState struct {
 // fragKey identifies a reassembly buffer by session + message ID.
 type fragKey struct {
 	sid   uint16
-	msgID uint8
+	msgID uint32
 }
 
 // fragBuf holds received fragments for a single fragmented message.
 type fragBuf struct {
-	frags    [256][]byte
-	total    uint8
-	received uint8
+	frags     [256][]byte
+	total     uint8
+	received  uint8
+	updatedAt time.Time
 }
 
 var (
@@ -99,6 +101,8 @@ var (
 	fragMu  sync.Mutex
 	fragMap = make(map[fragKey]*fragBuf)
 )
+
+const fragTTL = 45 * time.Second
 
 func main() {
 	loadConfig("config.json")
@@ -136,7 +140,20 @@ func writeFrame(conn net.Conn, cmd byte, payload []byte) {
 	binary.LittleEndian.PutUint16(frame[0:2], uint16(total))
 	frame[2] = cmd
 	copy(frame[3:], payload)
-	conn.Write(frame) //nolint:errcheck
+	if err := writeAll(conn, frame); err != nil {
+		fmt.Printf("⚠️ writeFrame error cmd=0x%02X addr=%s: %v\n", cmd, conn.RemoteAddr(), err)
+	}
+}
+
+func writeAll(conn net.Conn, b []byte) error {
+	for len(b) > 0 {
+		n, err := conn.Write(b)
+		if err != nil {
+			return err
+		}
+		b = b[n:]
+	}
+	return nil
 }
 
 func ecdhHandshake(conn net.Conn) ([]byte, error) {
@@ -655,13 +672,13 @@ func sendAllUserKeys(conn net.Conn) {
 // The assembled bytes start with the cmd tag (byte 0), stripped before returning.
 // Returns (0, nil) if more fragments needed or on error.
 func handleFragment(senderSID uint16, data []byte) (byte, []byte) {
-	if len(data) < 4 {
+	if len(data) < 7 {
 		return 0, nil
 	}
-	msgID := data[0]
-	fragIdx := data[1]
-	fragCount := data[2]
-	chunk := data[3:]
+	msgID := binary.LittleEndian.Uint32(data[0:4])
+	fragIdx := data[4]
+	fragCount := data[5]
+	chunk := data[6:]
 
 	if fragCount == 0 || fragIdx >= fragCount {
 		return 0, nil
@@ -670,10 +687,16 @@ func handleFragment(senderSID uint16, data []byte) (byte, []byte) {
 	key := fragKey{senderSID, msgID}
 	fragMu.Lock()
 	defer fragMu.Unlock()
+	pruneExpiredFragmentsLocked()
 
 	fb, ok := fragMap[key]
 	if !ok {
-		fb = &fragBuf{total: fragCount}
+		fb = &fragBuf{total: fragCount, updatedAt: time.Now()}
+		fragMap[key] = fb
+	} else if fb.total != fragCount {
+		// Protocol mismatch (message ID reuse with different fragment count) — reset buffer.
+		delete(fragMap, key)
+		fb = &fragBuf{total: fragCount, updatedAt: time.Now()}
 		fragMap[key] = fb
 	}
 	if fb.frags[fragIdx] == nil {
@@ -681,6 +704,7 @@ func handleFragment(senderSID uint16, data []byte) (byte, []byte) {
 		copy(fb.frags[fragIdx], chunk)
 		fb.received++
 	}
+	fb.updatedAt = time.Now()
 	if fb.received < fb.total {
 		return 0, nil
 	}
@@ -697,6 +721,18 @@ func handleFragment(senderSID uint16, data []byte) (byte, []byte) {
 	}
 	// assembled[0] = command tag; assembled[1:] = actual payload
 	return assembled[0], assembled[1:]
+}
+
+func pruneExpiredFragmentsLocked() {
+	if len(fragMap) == 0 {
+		return
+	}
+	now := time.Now()
+	for k, fb := range fragMap {
+		if now.Sub(fb.updatedAt) > fragTTL {
+			delete(fragMap, k)
+		}
+	}
 }
 
 // buildOnlinePacket builds [Count(1)][SID(2 BE)][NameLen(1)][Name]...
@@ -1154,10 +1190,10 @@ func sendRoomList(conn net.Conn, login string) {
 	var entries [][]byte
 	for rows.Next() {
 		var (
-			roomID  int64
-			name    string
-			isPubl  int
-			owner   string
+			roomID   int64
+			name     string
+			isPubl   int
+			owner    string
 			memCount int
 		)
 		if err := rows.Scan(&roomID, &name, &isPubl, &owner, &memCount); err != nil {
